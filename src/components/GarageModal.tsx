@@ -8,9 +8,10 @@ interface GarageModalProps {
   onClose: () => void;
   currentTankId: TankId;
   onSelectTank: (id: TankId) => void;
+  tankStats?: Record<TankId, { wins: number; losses: number }>;
 }
 
-export function GarageModal({ onClose, currentTankId, onSelectTank }: GarageModalProps) {
+export function GarageModal({ onClose, currentTankId, onSelectTank, tankStats }: GarageModalProps) {
   const tank = TANKS[currentTankId];
   const idx = TANK_ORDER.indexOf(currentTankId);
 
@@ -18,6 +19,11 @@ export function GarageModal({ onClose, currentTankId, onSelectTank }: GarageModa
     const next = TANK_ORDER[(idx + dir + TANK_ORDER.length) % TANK_ORDER.length];
     onSelectTank(next);
   };
+
+  // Calculate win rate for current tank
+  const curSt = tankStats?.[currentTankId] ?? { wins: 0, losses: 0 };
+  const curTotal = curSt.wins + curSt.losses;
+  const curWinRate = curTotal > 0 ? Math.round((curSt.wins / curTotal) * 100) : 0;
 
   return (
     <div style={styles.overlay}>
@@ -69,6 +75,10 @@ export function GarageModal({ onClose, currentTankId, onSelectTank }: GarageModa
               {TANK_ORDER.map((tid) => {
                 const t = TANKS[tid];
                 const isSelected = tid === currentTankId;
+                const st = tankStats?.[tid] ?? { wins: 0, losses: 0 };
+                const tTot = st.wins + st.losses;
+                const wr = tTot > 0 ? Math.round((st.wins / tTot) * 100) : 0;
+
                 return (
                   <button
                     key={tid}
@@ -80,18 +90,21 @@ export function GarageModal({ onClose, currentTankId, onSelectTank }: GarageModa
                       border: isSelected ? "2px solid #6366f1" : "1px solid rgba(255,255,255,0.1)",
                       backgroundColor: isSelected ? "rgba(99,102,241,0.2)" : "rgba(255,255,255,0.05)",
                       color: isSelected ? "#ffffff" : "#94a3b8",
-                      fontSize: "12px",
+                      fontSize: "11px",
                       fontWeight: isSelected ? "bold" : "normal",
                       cursor: "pointer",
                       display: "flex",
                       flexDirection: "column",
                       alignItems: "center",
-                      gap: "4px",
+                      gap: "3px",
                       transition: "all 0.2s ease",
                     }}
                   >
-                    <div style={{ width: "12px", height: "12px", borderRadius: "50%", backgroundColor: t.bodyColor, border: "1px solid #ffffff" }}></div>
+                    <div style={{ width: "10px", height: "10px", borderRadius: "50%", backgroundColor: t.bodyColor, border: "1px solid #ffffff" }}></div>
                     <span>{t.name.split(" ")[0]}</span>
+                    <span style={{ fontSize: "9px", color: wr > 0 ? "#38bdf8" : "#64748b" }}>
+                      {tTot > 0 ? `${wr}%` : "-"}
+                    </span>
                   </button>
                 );
               })}
@@ -127,6 +140,20 @@ export function GarageModal({ onClose, currentTankId, onSelectTank }: GarageModa
               <div style={styles.statBarContainer}>
                 <div style={{ ...styles.statBar, width: `${(tank.maxFuel / 150) * 100}%`, backgroundColor: "#eab308" }}></div>
               </div>
+
+              <div style={styles.statRow}>
+                <div style={styles.statLabel}>
+                  <span style={{ fontSize: "14px" }}>🏆</span>
+                  <span>전용 승률</span>
+                </div>
+                <div style={{ ...styles.statValue, color: curWinRate > 0 ? "#38bdf8" : "#94a3b8" }}>
+                  {curTotal > 0 ? `${curWinRate}% (${curSt.wins}승 ${curSt.losses}패)` : "전적 없음"}
+                </div>
+              </div>
+              <div style={styles.statBarContainer}>
+                <div style={{ ...styles.statBar, width: `${curWinRate}%`, backgroundColor: "#38bdf8" }}></div>
+              </div>
+
               <span style={styles.fuelTip}>※ 이동 시 초당 약 30의 연료가 소모됩니다.</span>
             </div>
 

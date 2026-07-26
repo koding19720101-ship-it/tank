@@ -95,11 +95,39 @@ export default function LobbyPage() {
       const l = parseInt(localStorage.getItem(`user_losses_${userId}`) || "0", 10);
       setWins(w);
       setLosses(l);
+
+      // Load per-tank stats
+      const statsStr = localStorage.getItem(`tank_stats_${userId}`);
+      if (statsStr) {
+        try { setTankStats(JSON.parse(statsStr)); } catch (e) {}
+      }
     }
   }, [session]);
 
   const totalGames = wins + losses;
   const winRate = totalGames > 0 ? Math.round((wins / totalGames) * 100) : 0;
+
+  // Calculate top win rate tank (minimum 1 game played)
+  const bestTankInfo = (() => {
+    let bestId: TankId | null = null;
+    let maxRate = -1;
+    let maxWins = -1;
+
+    (Object.keys(tankStats) as TankId[]).forEach((tid) => {
+      const st = tankStats[tid];
+      const tGames = st.wins + st.losses;
+      if (tGames > 0) {
+        const rate = Math.round((st.wins / tGames) * 100);
+        if (rate > maxRate || (rate === maxRate && st.wins > maxWins)) {
+          maxRate = rate;
+          maxWins = st.wins;
+          bestId = tid;
+        }
+      }
+    });
+
+    return bestId ? { tankId: bestId, rate: maxRate, wins: tankStats[bestId].wins, losses: tankStats[bestId].losses } : null;
+  })();
 
   const selectTank = (tankId: TankId) => {
     setSelectedTankId(tankId);
@@ -379,6 +407,11 @@ export default function LobbyPage() {
                 </div>
                 {nicknameError && <div style={styles.inlineError}>{nicknameError}</div>}
                 <h3 style={styles.readyText}>전투 준비가 되셨나요?</h3>
+                {bestTankInfo && (
+                  <div style={{ display: "inline-flex", alignItems: "center", gap: "6px", backgroundColor: "rgba(234, 179, 8, 0.15)", border: "1px solid rgba(234, 179, 8, 0.4)", color: "#facc15", padding: "6px 14px", borderRadius: "20px", fontSize: "13px", fontWeight: "bold", marginBottom: "12px" }}>
+                    <span>🏆 최고 승률 탱크: {TANKS[bestTankInfo.tankId].name} ({bestTankInfo.rate}% - {bestTankInfo.wins}승 {bestTankInfo.losses}패)</span>
+                  </div>
+                )}
                 <p style={styles.readySubtext}>플레이 버튼을 눌러 상대를 찾고 포격전을 시작하세요!</p>
                 <div style={styles.actionRow}>
                   <button onClick={() => setIsGarageOpen(true)} style={styles.lobbyGarageBtn}>
@@ -437,6 +470,7 @@ export default function LobbyPage() {
         <GarageModal
           currentTankId={selectedTankId}
           onSelectTank={selectTank}
+          tankStats={tankStats}
           onClose={() => setIsGarageOpen(false)}
         />
       )}
