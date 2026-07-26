@@ -8,6 +8,7 @@ import { LogOut, Play, Sparkles, Users, Palette, Check, X, Pencil, ShieldAlert }
 import { AvatarEditor } from "@/components/AvatarEditor";
 import { GarageModal } from "@/components/GarageModal";
 import { GameCanvas } from "@/components/GameCanvas";
+import { TankId, DEFAULT_TANK_ID } from "@/lib/tanks";
 
 type MatchmakingState = "IDLE" | "SEARCHING" | "MATCHED";
 
@@ -15,6 +16,7 @@ interface PlayerProfile {
   id: string;
   name: string;
   image: string;
+  tankId?: TankId;
 }
 
 interface GameStartData {
@@ -36,6 +38,7 @@ export default function LobbyPage() {
   const [customAvatar, setCustomAvatar] = useState<string>("");
   const [isEditingAvatar, setIsEditingAvatar] = useState(false);
   const [isGarageOpen, setIsGarageOpen] = useState(false);
+  const [selectedTankId, setSelectedTankId] = useState<TankId>(DEFAULT_TANK_ID);
 
   // Gameplay session states
   const [isPlaying, setIsPlaying] = useState(false);
@@ -51,6 +54,7 @@ export default function LobbyPage() {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   // Refs so socket callbacks always have fresh values
   const avatarRef = useRef<string>("");
+  const tankIdRef = useRef<TankId>(DEFAULT_TANK_ID);
   const sessionRef = useRef(session);
 
   const getBlankWhiteAvatar = () => {
@@ -66,6 +70,7 @@ export default function LobbyPage() {
   // Keep refs in sync
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { avatarRef.current = customAvatar; }, [customAvatar]);
+  useEffect(() => { tankIdRef.current = selectedTankId; }, [selectedTankId]);
 
   useEffect(() => {
     if (status === "unauthenticated") router.push("/auth/signin");
@@ -76,8 +81,18 @@ export default function LobbyPage() {
       const userId = (session.user as any).id || session.user.email || "default";
       const saved = localStorage.getItem(`custom_avatar_${userId}`);
       setCustomAvatar(saved || getBlankWhiteAvatar());
+      const savedTank = localStorage.getItem(`selected_tank_${userId}`) as TankId | null;
+      if (savedTank === "chrome" || savedTank === "shotgun") setSelectedTankId(savedTank);
     }
   }, [session]);
+
+  const selectTank = (tankId: TankId) => {
+    setSelectedTankId(tankId);
+    if (session?.user) {
+      const userId = (session.user as any).id || session.user.email || "default";
+      localStorage.setItem(`selected_tank_${userId}`, tankId);
+    }
+  };
 
   useEffect(() => {
     if (matchState === "SEARCHING") {
@@ -134,6 +149,7 @@ export default function LobbyPage() {
       id: (currentSession?.user as any)?.id || currentSession?.user?.email || "unknown",
       name: currentSession?.user?.name || "탱크 유저",
       image: activeAvatar,
+      tankId: tankIdRef.current,
     };
 
     console.log("[lobby] emitting join-game-room", roomName, playerProfile.name);
@@ -148,6 +164,7 @@ export default function LobbyPage() {
       id: (session.user as any).id || session.user.email || "unknown",
       name: session.user.name || "탱크 유저",
       image: customAvatar || getBlankWhiteAvatar(),
+      tankId: selectedTankId,
     };
     setMatchState("SEARCHING");
     socketRef.current.emit("join-queue", playerProfile);
@@ -244,6 +261,7 @@ export default function LobbyPage() {
             id: (session.user as any).id || session.user.email || "me",
             name: session.user.name || "나",
             image: displayAvatar,
+            tankId: selectedTankId,
           }}
           opponentProfile={opponent}
           initialSeed={gameStartInfo.seed}
@@ -378,7 +396,11 @@ export default function LobbyPage() {
 
       {/* Garage Workshop Modal */}
       {isGarageOpen && (
-        <GarageModal onClose={() => setIsGarageOpen(false)} />
+        <GarageModal
+          currentTankId={selectedTankId}
+          onSelectTank={selectTank}
+          onClose={() => setIsGarageOpen(false)}
+        />
       )}
 
       <style>{`

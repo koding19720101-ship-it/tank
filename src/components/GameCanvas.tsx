@@ -3,19 +3,18 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { Socket } from "socket.io-client";
 import { Shield, Zap } from "lucide-react";
+import { WEAPON_DEFS, WeaponId, TANKS, TankId, DEFAULT_TANK_ID } from "@/lib/tanks";
 
 interface GameCanvasProps {
   socket: Socket;
   roomName: string;
-  myProfile: { id: string; name: string; image: string };
-  opponentProfile: { id: string; name: string; image: string };
+  myProfile: { id: string; name: string; image: string; tankId?: TankId };
+  opponentProfile: { id: string; name: string; image: string; tankId?: TankId };
   initialSeed: number;
   playersInfo: Array<{ socketId: string; x: number; hp: number }>;
   activeSocketId: string;
   onGameEnded: (reason: string) => void;
 }
-
-type WeaponType = "heavy" | "sniper" | "cluster";
 
 interface Projectile {
   id: string;
@@ -23,10 +22,21 @@ interface Projectile {
   y: number;
   vx: number;
   vy: number;
-  type: WeaponType;
+  type: WeaponId;
   splitTimer?: number;
   isSplit?: boolean;
   owner: "me" | "opp";
+}
+
+interface Mine {
+  id: string;
+  x: number;
+  y: number;
+}
+
+interface BurnState {
+  ticksLeft: number;
+  lastTick: number;
 }
 
 interface Particle {
@@ -39,12 +49,9 @@ interface Particle {
 const CANVAS_W = 800;
 const CANVAS_H = 500;
 const GRAVITY = 0.25;
-const WEAPONS: WeaponType[] = ["heavy", "sniper", "cluster"];
-const WEAPON_LABELS: Record<WeaponType, string> = {
-  heavy: "해비탄 💣",
-  sniper: "저격탄 ⚡",
-  cluster: "집속탄 ✴️",
-};
+const BURN_DMG_PER_TICK = 2;
+const BURN_TICKS = 4;
+const MINE_TRIGGER_RADIUS = 13;
 
 export function GameCanvas({
   socket,
@@ -58,25 +65,32 @@ export function GameCanvas({
 }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  const myTank = TANKS[myProfile.tankId ?? DEFAULT_TANK_ID];
+  const oppTank = TANKS[opponentProfile.tankId ?? DEFAULT_TANK_ID];
+  const myWeapons = myTank.weapons;
+
   // All mutable game state in a single ref to avoid stale closures
   const G = useRef({
     terrain: [] as number[],
     myX: playersInfo.find(p => p.socketId === socket.id)?.x ?? 150,
     myY: 0,
-    myHp: 100,
-    myFuel: 100,
+    myHp: myTank.maxHp,
+    myFuel: myTank.maxFuel,
     myDir: 1,
     oppX: playersInfo.find(p => p.socketId !== socket.id)?.x ?? 650,
     oppY: 0,
-    oppHp: 100,
+    oppHp: oppTank.maxHp,
     oppDir: -1,
     projectiles: [] as Projectile[],
+    mines: [] as Mine[],
     particles: [] as Particle[],
+    myBurn: null as BurnState | null,
+    oppBurn: null as BurnState | null,
     isMyTurn: activeSocketId === socket.id,
     activeSocketId: activeSocketId,
     angle: 45,
     power: 50,
-    weapon: "heavy" as WeaponType,
+    weapon: myWeapons[0] as WeaponId,
     keys: {} as Record<string, boolean>,
     turnEndEmitted: false,
     gameOver: false,
@@ -85,16 +99,16 @@ export function GameCanvas({
   });
 
   // React UI state (only for display)
-  const [uiMyHp, setUiMyHp] = useState(100);
-  const [uiOppHp, setUiOppHp] = useState(100);
-  const [uiMyFuel, setUiMyFuel] = useState(100);
-  const [uiWeapon, setUiWeapon] = useState<WeaponType>("heavy");
+  const [uiMyHp, setUiMyHp] = useState(myTank.maxHp);
+  const [uiOppHp, setUiOppHp] = useState(oppTank.maxHp);
+  const [uiMyFuel, setUiMyFuel] = useState(myTank.maxFuel);
+  const [uiWeapon, setUiWeapon] = useState<WeaponId>(myWeapons[0]);
   const [uiIsMyTurn, setUiIsMyTurn] = useState(activeSocketId === socket.id);
   const [uiTimer, setUiTimer] = useState(20);
   const [uiAngle, setUiAngle] = useState(45);
   const [uiPower, setUiPower] = useState(50);
 
-  // ── Terrain generation ──────────────────────────────────────────────
+  // ── Terrain generation (모래 지형) ───────────────────────────────────
   useEffect(() => {
     const g = G.current;
     const terrain: number[] = [];
@@ -156,7 +170,7 @@ export function GameCanvas({
       g.turnTimer = 20;
       setUiIsMyTurn(g.isMyTurn);
       setUiTimer(20);
-      if (g.isMyTurn) { g.myFuel = 100; setUiMyFuel(100); }
+      if (g.isMyTurn) { g.myFuel = myTank.maxFuel; setUiMyFuel(myTank.maxFuel); }
     };
 
     const onEnded = ({ reason }: { reason: string }) => {
@@ -189,8 +203,8 @@ export function GameCanvas({
     }
   };
 
-  const spawnParticles = (ex: number, ey: number, count = 25, size = 4) => {
-    const colors = ["#ff5722", "#ff9800", "#ffeb3b", "#9e9e9e", "#fff"];
+  const spawnParticles = (ex: number, ey: number, count = 25, size = 4, palette?: string[]) => {
+    const colors = palette ?? ["#ff5722", "#ff9800", "#ffeb3b", "#c2965b", "#fff"];
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
       const spd = Math.random() * 4 + 1;
@@ -207,8 +221,9 @@ export function GameCanvas({
   const spawnProjectile = (
     sx: number, sy: number,
     ang: number, pwr: number,
-    wep: WeaponType, owner: "me" | "opp"
+    wep: WeaponId, owner: "me" | "opp"
   ) => {
+    const def = WEAPON_DEFS[wep];
     const angRad = (ang * Math.PI) / 180;
     const spd = pwr * 0.15;
     const proj: Projectile = {
@@ -218,43 +233,70 @@ export function GameCanvas({
       vy: -Math.sin(angRad) * spd,
       type: wep, owner,
     };
-    if (wep === "cluster") { proj.splitTimer = 45; proj.isSplit = false; }
+    if (def.splitCount) { proj.splitTimer = 45; proj.isSplit = false; }
     G.current.projectiles.push(proj);
   };
 
-  const handleExplosion = (p: Projectile) => {
+  const igniteTank = (isMe: boolean) => {
     const g = G.current;
-    if (p.x < 0 || p.x >= CANVAS_W) return;
+    if (isMe) {
+      if (!g.myBurn) g.myBurn = { ticksLeft: BURN_TICKS, lastTick: Date.now() };
+      else g.myBurn.ticksLeft = BURN_TICKS;
+    } else {
+      if (!g.oppBurn) g.oppBurn = { ticksLeft: BURN_TICKS, lastTick: Date.now() };
+      else g.oppBurn.ticksLeft = BURN_TICKS;
+    }
+  };
 
-    let radius = 30, maxDmg = 20;
-    if (p.type === "heavy") { radius = 42; maxDmg = 20; destructTerrain(p.x, p.y, 38); spawnParticles(p.x, p.y, 35, 6); }
-    else if (p.type === "sniper") { radius = 18; maxDmg = 20; destructTerrain(p.x, p.y, 12); spawnParticles(p.x, p.y, 15, 3); }
-    else { radius = 22; maxDmg = p.isSplit ? 5 : 8; destructTerrain(p.x, p.y, 16); spawnParticles(p.x, p.y, 12, 3); }
+  const applyHpDamage = (isMe: boolean, dmg: number) => {
+    const g = G.current;
+    if (dmg <= 0) return;
+    if (isMe) {
+      const newHp = Math.max(0, g.myHp - dmg);
+      g.myHp = newHp; setUiMyHp(newHp);
+      if (newHp <= 0 && !g.gameOver) {
+        g.gameOver = true;
+        socket.emit("report-game-end", { roomName, reason: "defeat" });
+      }
+    } else {
+      const newHp = Math.max(0, g.oppHp - dmg);
+      g.oppHp = newHp; setUiOppHp(newHp);
+      if (newHp <= 0 && !g.gameOver) {
+        g.gameOver = true;
+        socket.emit("report-game-end", { roomName, reason: "victory" });
+      }
+    }
+  };
 
-    const applyDmg = (tx: number, ty: number, isMe: boolean) => {
-      const dist = Math.hypot(tx - p.x, ty - p.y);
+  // 폭발 지점 중심의 범위 피해 (자신도 범위 안에 있으면 피해를 입음)
+  const explodeAt = (ex: number, ey: number, wep: WeaponId, isSplit: boolean) => {
+    const g = G.current;
+    const def = WEAPON_DEFS[wep];
+    const radius = def.radius;
+    const maxDmg = isSplit ? (def.splitDamage ?? def.maxDmg) : def.maxDmg;
+    const destructRadius = wep === "heavy" ? 38 : wep === "sniper" ? 12 : wep === "mine" ? 30 : 16;
+    const particleCount = wep === "heavy" ? 35 : wep === "mine" ? 30 : wep === "sniper" ? 15 : 12;
+    const palette = def.incendiary ? ["#f97316", "#fb923c", "#fde047", "#7c2d12"] : undefined;
+
+    destructTerrain(ex, ey, destructRadius);
+    spawnParticles(ex, ey, particleCount, 4, palette);
+
+    const applyToTank = (tx: number, ty: number, isMe: boolean) => {
+      const dist = Math.hypot(tx - ex, ty - ey);
       if (dist < radius) {
         const dmg = Math.round(maxDmg * (1 - dist / radius));
-        if (isMe) {
-          const newHp = Math.max(0, g.myHp - dmg);
-          g.myHp = newHp; setUiMyHp(newHp);
-          if (newHp <= 0 && !g.gameOver) {
-            g.gameOver = true;
-            socket.emit("report-game-end", { roomName, reason: "defeat" });
-          }
-        } else {
-          const newHp = Math.max(0, g.oppHp - dmg);
-          g.oppHp = newHp; setUiOppHp(newHp);
-          if (newHp <= 0 && !g.gameOver) {
-            g.gameOver = true;
-            socket.emit("report-game-end", { roomName, reason: "victory" });
-          }
-        }
+        applyHpDamage(isMe, dmg);
+        if (def.incendiary) igniteTank(isMe);
       }
     };
 
-    applyDmg(g.myX, g.myY, true);
-    applyDmg(g.oppX, g.oppY, false);
+    applyToTank(g.myX, g.myY, true);
+    applyToTank(g.oppX, g.oppY, false);
+  };
+
+  const handleExplosion = (p: Projectile) => {
+    if (p.x < 0 || p.x >= CANVAS_W) return;
+    explodeAt(p.x, p.y, p.type, !!p.isSplit);
   };
 
   // ── Main Canvas Loop ─────────────────────────────────────────────────
@@ -301,10 +343,42 @@ export function GameCanvas({
       if (g.terrain[Math.round(g.myX)] !== undefined) g.myY = g.terrain[Math.round(g.myX)];
       if (g.terrain[Math.round(g.oppX)] !== undefined) g.oppY = g.terrain[Math.round(g.oppX)];
 
+      // ─ Burn (화상) DOT 처리 ─
+      const now2 = Date.now();
+      if (g.myBurn && now2 - g.myBurn.lastTick >= 1000) {
+        applyHpDamage(true, BURN_DMG_PER_TICK);
+        g.myBurn.ticksLeft -= 1;
+        g.myBurn.lastTick = now2;
+        if (g.myBurn.ticksLeft <= 0) g.myBurn = null;
+      }
+      if (g.oppBurn && now2 - g.oppBurn.lastTick >= 1000) {
+        applyHpDamage(false, BURN_DMG_PER_TICK);
+        g.oppBurn.ticksLeft -= 1;
+        g.oppBurn.lastTick = now2;
+        if (g.oppBurn.ticksLeft <= 0) g.oppBurn = null;
+      }
+
+      // ─ 지뢰 밟기 판정 ─
+      if (g.mines.length > 0) {
+        const minesToRemove: number[] = [];
+        g.mines.forEach((m, idx) => {
+          const hitMe = Math.abs(g.myX - m.x) < MINE_TRIGGER_RADIUS;
+          const hitOpp = Math.abs(g.oppX - m.x) < MINE_TRIGGER_RADIUS;
+          if (hitMe || hitOpp) {
+            explodeAt(m.x, m.y, "mine", false);
+            minesToRemove.push(idx);
+          }
+        });
+        if (minesToRemove.length) {
+          g.mines = g.mines.filter((_, idx) => !minesToRemove.includes(idx));
+        }
+      }
+
       // ─ Projectile physics ─
       const toRemove: number[] = [];
       for (let i = g.projectiles.length - 1; i >= 0; i--) {
         const p = g.projectiles[i];
+        const def = WEAPON_DEFS[p.type];
         p.x += p.vx; p.y += p.vy; p.vy += GRAVITY;
 
         // Sniper drills terrain in-flight
@@ -312,13 +386,20 @@ export function GameCanvas({
           if (p.y >= g.terrain[Math.round(p.x)]) destructTerrain(p.x, p.y, 7);
         }
 
-        // Cluster split
-        if (p.type === "cluster" && !p.isSplit && p.splitTimer !== undefined) {
+        // 분열탄 계열 분열 처리 (집속탄/샷건 집속탄/소이탄)
+        if (def.splitCount && !p.isSplit && p.splitTimer !== undefined) {
           p.splitTimer--;
           if (p.splitTimer <= 0) {
             p.isSplit = true;
-            for (let j = -1; j <= 1; j++) {
-              g.projectiles.push({ id: Math.random().toString(), x: p.x, y: p.y, vx: p.vx + j * 1.8, vy: p.vy - 1, type: "cluster", isSplit: true, owner: p.owner });
+            const count = def.splitCount;
+            for (let j = 0; j < count; j++) {
+              const offset = j - (count - 1) / 2;
+              g.projectiles.push({
+                id: Math.random().toString(36).slice(2),
+                x: p.x, y: p.y,
+                vx: p.vx + offset * 1.7, vy: p.vy - 1,
+                type: p.type, isSplit: true, owner: p.owner,
+              });
             }
             spawnParticles(p.x, p.y, 8, 2);
             toRemove.push(i);
@@ -329,7 +410,15 @@ export function GameCanvas({
         const outOfBounds = p.x < 0 || p.x >= CANVAS_W || p.y > CANVAS_H;
         const hitTerrain = p.x >= 0 && p.x < CANVAS_W && p.y >= g.terrain[Math.round(p.x)];
         if (outOfBounds || hitTerrain) {
-          handleExplosion(p);
+          if (def.isMine) {
+            // 지뢰는 착탄시 폭발하지 않고 지형 위에 설치됨
+            if (hitTerrain) {
+              g.mines.push({ id: Math.random().toString(36).slice(2), x: p.x, y: g.terrain[Math.round(p.x)] });
+              spawnParticles(p.x, p.y, 6, 2, ["#84cc16", "#a3e635"]);
+            }
+          } else {
+            handleExplosion(p);
+          }
           toRemove.push(i);
         }
       }
@@ -351,31 +440,62 @@ export function GameCanvas({
       // ─ Render ─
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
-      // Sky
+      // Sky (사막/모래 느낌의 노을 하늘)
       const sky = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
-      sky.addColorStop(0, "#0b0f19"); sky.addColorStop(1, "#1c1537");
+      sky.addColorStop(0, "#fde9c8");
+      sky.addColorStop(0.45, "#f6c88f");
+      sky.addColorStop(1, "#e0a458");
       ctx.fillStyle = sky; ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-      // Stars
-      for (let s = 0; s < 60; s++) {
-        const sx = (initialSeed * 999 + s * 137) % CANVAS_W;
-        const sy = (initialSeed * 777 + s * 233) % 200;
-        ctx.beginPath(); ctx.arc(sx, sy, 0.8, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(255,255,255,0.5)"; ctx.fill();
-      }
+      // 태양
+      const sunX = (CANVAS_W * 0.78);
+      const sunY = 90;
+      const sunGrad = ctx.createRadialGradient(sunX, sunY, 5, sunX, sunY, 70);
+      sunGrad.addColorStop(0, "rgba(255,247,214,0.95)");
+      sunGrad.addColorStop(1, "rgba(255,247,214,0)");
+      ctx.fillStyle = sunGrad;
+      ctx.beginPath(); ctx.arc(sunX, sunY, 70, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(sunX, sunY, 26, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff3d6"; ctx.fill();
 
-      // Terrain fill
+      // 멀리 있는 모래 언덕 실루엣
+      ctx.beginPath(); ctx.moveTo(0, CANVAS_H);
+      for (let x = 0; x <= CANVAS_W; x += 20) {
+        const dy = 260 + Math.sin(x * 0.01 + initialSeed * 5) * 18;
+        ctx.lineTo(x, dy);
+      }
+      ctx.lineTo(CANVAS_W, CANVAS_H); ctx.closePath();
+      ctx.fillStyle = "rgba(196,140,84,0.35)"; ctx.fill();
+
+      // Terrain fill (모래 지형)
       ctx.beginPath(); ctx.moveTo(0, CANVAS_H);
       for (let x = 0; x < CANVAS_W; x++) ctx.lineTo(x, g.terrain[x]);
       ctx.lineTo(CANVAS_W, CANVAS_H); ctx.closePath();
-      const tGrad = ctx.createLinearGradient(0, 200, 0, CANVAS_H);
-      tGrad.addColorStop(0, "#2d3748"); tGrad.addColorStop(1, "#0f172a");
+      const tGrad = ctx.createLinearGradient(0, 150, 0, CANVAS_H);
+      tGrad.addColorStop(0, "#e8c48a");
+      tGrad.addColorStop(0.35, "#c9975c");
+      tGrad.addColorStop(1, "#8a6238");
       ctx.fillStyle = tGrad; ctx.fill();
 
-      // Terrain top glow
+      // Terrain top glow (모래 능선)
       ctx.beginPath(); ctx.moveTo(0, g.terrain[0]);
       for (let x = 1; x < CANVAS_W; x++) ctx.lineTo(x, g.terrain[x]);
-      ctx.strokeStyle = "#6366f1"; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.strokeStyle = "#f2d9a8"; ctx.lineWidth = 2.5; ctx.stroke();
+
+      // 지뢰 표시
+      g.mines.forEach(m => {
+        ctx.save();
+        ctx.translate(m.x, m.y - 3);
+        ctx.beginPath();
+        ctx.moveTo(0, -7); ctx.lineTo(7, 0); ctx.lineTo(0, 7); ctx.lineTo(-7, 0);
+        ctx.closePath();
+        ctx.fillStyle = "#4d7c0f";
+        ctx.fill();
+        ctx.strokeStyle = "#bef264"; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, 2, 0, Math.PI * 2);
+        ctx.fillStyle = "#facc15"; ctx.fill();
+        ctx.restore();
+      });
 
       // Particles
       g.particles.forEach(pt => {
@@ -387,7 +507,7 @@ export function GameCanvas({
       ctx.globalAlpha = 1;
 
       // Draw tank helper
-      const drawTank = (tx: number, ty: number, isMe: boolean, ang: number, pwr: number) => {
+      const drawTank = (tx: number, ty: number, isMe: boolean, ang: number, pwr: number, bodyColor: string, burning: boolean) => {
         const rx = Math.round(tx);
         const lx = Math.max(0, rx - 6), rx2 = Math.min(CANVAS_W - 1, rx + 6);
         const slope = Math.atan2(g.terrain[rx2] - g.terrain[lx], 12);
@@ -395,21 +515,32 @@ export function GameCanvas({
         ctx.save(); ctx.translate(tx, ty); ctx.rotate(slope);
 
         // Treads
-        ctx.fillStyle = "#1e293b";
+        ctx.fillStyle = "#3a2c1a";
         ctx.beginPath(); ctx.roundRect(-16, -2, 32, 7, 3); ctx.fill();
-        ctx.strokeStyle = "#475569"; ctx.lineWidth = 1; ctx.stroke();
+        ctx.strokeStyle = "#5c4526"; ctx.lineWidth = 1; ctx.stroke();
 
-        // Body
-        ctx.fillStyle = isMe ? "#7889a4" : "#94a3b8";
+        // Body (탱크별 컬러)
+        ctx.fillStyle = bodyColor;
         ctx.beginPath(); ctx.roundRect(-14, -9, 28, 8, 2); ctx.fill();
-        ctx.strokeStyle = "#475569"; ctx.lineWidth = 1; ctx.stroke();
+        ctx.strokeStyle = "#334155"; ctx.lineWidth = 1; ctx.stroke();
 
         // Turret dome
         ctx.fillStyle = "#64748b";
         ctx.beginPath(); ctx.arc(0, -9, 6, Math.PI, 0); ctx.fill();
-        ctx.strokeStyle = "#475569"; ctx.stroke();
+        ctx.strokeStyle = "#334155"; ctx.stroke();
 
         ctx.restore();
+
+        // 화상 이펙트
+        if (burning) {
+          ctx.save();
+          ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 100) * 0.2;
+          ctx.beginPath();
+          ctx.arc(tx, ty - 16, 5, 0, Math.PI * 2);
+          ctx.fillStyle = "#f97316"; ctx.fill();
+          ctx.globalAlpha = 1;
+          ctx.restore();
+        }
 
         // Aim guide for my tank on my turn
         if (isMe && g.isMyTurn && g.projectiles.length === 0 && !g.firedThisTurn) {
@@ -419,7 +550,7 @@ export function GameCanvas({
           let gvx = Math.cos(aRad) * gs, gvy = -Math.sin(aRad) * gs;
 
           ctx.beginPath(); ctx.setLineDash([4, 5]);
-          ctx.strokeStyle = "rgba(99,102,241,0.45)"; ctx.lineWidth = 1.5;
+          ctx.strokeStyle = "rgba(99,102,241,0.5)"; ctx.lineWidth = 1.5;
           ctx.moveTo(gx, gy);
           for (let step = 0; step < 90; step++) {
             gx += gvx; gy += gvy; gvy += GRAVITY;
@@ -433,25 +564,26 @@ export function GameCanvas({
           ctx.save(); ctx.translate(tx, ty - 9);
           ctx.rotate(-aRad);
           ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(18, 0);
-          ctx.strokeStyle = "#475569"; ctx.lineWidth = 3; ctx.stroke();
+          ctx.strokeStyle = "#334155"; ctx.lineWidth = 3; ctx.stroke();
           ctx.restore();
         } else {
           // Static barrel for opponent
           const oppRad = isMe ? 0 : Math.PI;
           ctx.save(); ctx.translate(tx, ty - 9); ctx.rotate(oppRad);
           ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(15, -3);
-          ctx.strokeStyle = "#475569"; ctx.lineWidth = 3; ctx.stroke();
+          ctx.strokeStyle = "#334155"; ctx.lineWidth = 3; ctx.stroke();
           ctx.restore();
         }
       };
 
-      drawTank(g.myX, g.myY, true, g.angle, g.power);
-      drawTank(g.oppX, g.oppY, false, 180 - g.angle, g.power);
+      drawTank(g.myX, g.myY, true, g.angle, g.power, myTank.bodyColor, !!g.myBurn);
+      drawTank(g.oppX, g.oppY, false, 180 - g.angle, g.power, oppTank.bodyColor, !!g.oppBurn);
 
       // Projectiles
       g.projectiles.forEach(p => {
-        const color = p.type === "heavy" ? "#ef4444" : p.type === "sniper" ? "#60a5fa" : "#a78bfa";
-        const r = p.type === "heavy" ? 6 : p.type === "sniper" ? 3 : 4;
+        const def = WEAPON_DEFS[p.type];
+        const color = def.color;
+        const r = p.type === "heavy" ? 6 : p.type === "sniper" ? 3 : p.type === "mine" ? 5 : 4;
         ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fillStyle = color; ctx.fill();
         // Trail
@@ -463,9 +595,9 @@ export function GameCanvas({
       // Player name labels above tanks
       ctx.font = "bold 11px system-ui";
       ctx.textAlign = "center";
-      ctx.fillStyle = "#818cf8";
+      ctx.fillStyle = "#4338ca";
       ctx.fillText(myProfile.name, g.myX, g.myY - 28);
-      ctx.fillStyle = "#f87171";
+      ctx.fillStyle = "#b91c1c";
       ctx.fillText(opponentProfile.name, g.oppX, g.oppY - 28);
 
       raf = requestAnimationFrame(loop);
@@ -506,13 +638,13 @@ export function GameCanvas({
     e.preventDefault();
     const g = G.current;
     if (!g.isMyTurn) return;
-    const idx = WEAPONS.indexOf(g.weapon);
-    const next = WEAPONS[(idx + (e.deltaY > 0 ? 1 : -1) + WEAPONS.length) % WEAPONS.length];
+    const idx = myWeapons.indexOf(g.weapon);
+    const next = myWeapons[(idx + (e.deltaY > 0 ? 1 : -1) + myWeapons.length) % myWeapons.length];
     g.weapon = next;
     setUiWeapon(next);
   };
 
-  const weaponColor = uiWeapon === "heavy" ? "#ef4444" : uiWeapon === "sniper" ? "#60a5fa" : "#a78bfa";
+  const weaponDef = WEAPON_DEFS[uiWeapon];
 
   return (
     <div style={styles.wrapper}>
@@ -523,8 +655,8 @@ export function GameCanvas({
           <img src={myProfile.image} alt="me" style={{ ...styles.hudAvatar, borderColor: "#6366f1" }} />
           <div style={styles.hudInfo}>
             <div style={styles.hudName}>{myProfile.name}</div>
-            <StatBar label="HP" value={uiMyHp} color="#ef4444" icon={<Shield size={11} />} />
-            <StatBar label="연료" value={uiMyFuel} color="#eab308" icon={<Zap size={11} />} />
+            <StatBar label="HP" value={uiMyHp} max={myTank.maxHp} color="#ef4444" icon={<Shield size={11} />} />
+            <StatBar label="연료" value={uiMyFuel} max={myTank.maxFuel} color="#eab308" icon={<Zap size={11} />} />
           </div>
         </div>
 
@@ -541,7 +673,7 @@ export function GameCanvas({
           <img src={opponentProfile.image} alt="opp" style={{ ...styles.hudAvatar, borderColor: "#f87171" }} />
           <div style={{ ...styles.hudInfo, alignItems: "flex-end" }}>
             <div style={styles.hudName}>{opponentProfile.name}</div>
-            <StatBar label="HP" value={uiOppHp} color="#ef4444" icon={<Shield size={11} />} />
+            <StatBar label="HP" value={uiOppHp} max={oppTank.maxHp} color="#ef4444" icon={<Shield size={11} />} />
           </div>
         </div>
       </div>
@@ -564,8 +696,8 @@ export function GameCanvas({
         <span style={styles.hint}><kbd style={styles.kbd}>A</kbd><kbd style={styles.kbd}>D</kbd> 이동</span>
         <span style={styles.hint}><kbd style={styles.kbd}>마우스 이동</kbd> 조준  <kbd style={styles.kbd}>클릭</kbd> 발사</span>
         <span style={styles.hint}><kbd style={styles.kbd}>스크롤</kbd> 무기 전환</span>
-        <span style={{ ...styles.weaponLabel, color: weaponColor }}>
-          {WEAPON_LABELS[uiWeapon]}
+        <span style={{ ...styles.weaponLabel, color: weaponDef.color }}>
+          {weaponDef.label}
         </span>
         <span style={styles.hint}>각도 {uiAngle}°  세기 {uiPower}</span>
       </div>
@@ -573,14 +705,15 @@ export function GameCanvas({
   );
 }
 
-function StatBar({ label, value, color, icon }: { label: string; value: number; color: string; icon: React.ReactNode }) {
+function StatBar({ label, value, max, color, icon }: { label: string; value: number; max: number; color: string; icon: React.ReactNode }) {
+  const pct = Math.max(0, Math.min(100, (value / max) * 100));
   return (
     <div style={{ marginBottom: "3px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "10px", color: "#cbd5e1", marginBottom: "2px" }}>
         {icon}<span>{label}: {value}</span>
       </div>
       <div style={{ width: "130px", height: "5px", background: "rgba(255,255,255,0.1)", borderRadius: "3px", overflow: "hidden" }}>
-        <div style={{ width: `${value}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.3s" }} />
+        <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.3s" }} />
       </div>
     </div>
   );
