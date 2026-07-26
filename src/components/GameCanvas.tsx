@@ -61,7 +61,7 @@ const TREE_BOUNCE_VY = -7.5;
 const TREE_TRIGGER_COOLDOWN_MS = 1500;
 const TREE_TRIGGER_RADIUS = 26;
 const TREE_MOUND_RADIUS = 50;
-const TREE_VISUAL_SCALE = 2.1;
+const TREE_VISUAL_SCALE = 3.0;
 
 export function GameCanvas({
   socket,
@@ -321,7 +321,7 @@ export function GameCanvas({
         applyHpDamage(isMe, dmg);
         if (def.incendiary) igniteTank(isMe);
         if (def.flowerEffect && isMe) {
-          const delta = Math.random() * 10 - 5; // -5 ~ 5
+          const delta = Math.random() * 30 - 15; // -15 ~ 15
           const newAngle = Math.max(0, Math.min(180, Math.round(g.angle + delta)));
           g.angle = newAngle;
           setUiAngle(newAngle);

@@ -27,8 +27,8 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   buckshot: { label: "집속탄 🔹", color: "#38bdf8", radius: 16, maxDmg: 3, splitCount: 5, splitDamage: 3, splitDelay: 2, spreadFactor: 1.05 },
   incendiary: { label: "소이탄 🔥", color: "#f97316", radius: 16, maxDmg: 3, splitCount: 5, splitDamage: 3, splitDelay: 2, spreadFactor: 1.05, incendiary: true },
   mine: { label: "지뢰 💠", color: "#84cc16", radius: 34, maxDmg: 26, groundEffect: "mine" },
-  vine: { label: "덩쿨탄 🌿", color: "#65a30d", radius: 16, maxDmg: 6, splitCount: 5, splitDelay: 2, spreadFactor: 1.05, groundEffect: "vine" },
-  tree: { label: "세계수 🌳", color: "#16a34a", radius: 34, maxDmg: 16, groundEffect: "tree" },
+  vine: { label: "덩쿨탄 🌿", color: "#65a30d", radius: 16, maxDmg: 2, splitCount: 5, splitDamage: 2, splitDelay: 2, spreadFactor: 1.05, groundEffect: "vine" },
+  tree: { label: "세계수 🌳", color: "#16a34a", radius: 34, maxDmg: 30, groundEffect: "tree" },
   flower: { label: "플라워탄 🌸", color: "#f472b6", radius: 24, maxDmg: 12, flowerEffect: true },
 };
 
