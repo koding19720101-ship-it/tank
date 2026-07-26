@@ -1,0 +1,12 @@
+{
+  "name": "tank-matchmaker",
+  "version": "1.0.0",
+  "private": true,
+  "main": "matchmaker.js",
+  "scripts": {
+    "start": "node matchmaker.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.3"
+  }
+}
