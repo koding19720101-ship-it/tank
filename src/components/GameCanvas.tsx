@@ -1122,11 +1122,9 @@ export function GameCanvas({
   const weaponDef = WEAPON_DEFS[uiWeapon];
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // 마우스로 캔버스 클릭 시 즉시 발사 (PC 환경 조작)
-    if (e.pointerType === "mouse") {
-      updateAiming(e.clientX, e.clientY);
-      handleFireBtn();
-    }
+    // 캔버스 클릭 시 조준 업데이트 후 즉시 발사 (PC & 모바일 지원)
+    updateAiming(e.clientX, e.clientY);
+    handleFireBtn();
   };
 
   return (
