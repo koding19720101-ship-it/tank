@@ -59,6 +59,9 @@ const MINE_TRIGGER_RADIUS = 13;
 const TREE_CONVERT_MS = 4000;
 const TREE_BOUNCE_VY = -7.5;
 const TREE_TRIGGER_COOLDOWN_MS = 1500;
+const TREE_TRIGGER_RADIUS = 26;
+const TREE_MOUND_RADIUS = 50;
+const TREE_VISUAL_SCALE = 2.1;
 
 export function GameCanvas({
   socket,
@@ -416,23 +419,30 @@ export function GameCanvas({
         g.hazards.forEach((h, idx) => {
           const hitMe = Math.abs(g.myX - h.x) < MINE_TRIGGER_RADIUS;
           const hitOpp = Math.abs(g.oppX - h.x) < MINE_TRIGGER_RADIUS;
+          const treeHitMe = Math.abs(g.myX - h.x) < TREE_TRIGGER_RADIUS;
+          const treeHitOpp = Math.abs(g.oppX - h.x) < TREE_TRIGGER_RADIUS;
 
           if (h.kind === "mine") {
             if (hitMe || hitOpp) { explodeAt(h.x, h.y, "mine", false); hzToRemove.add(idx); }
           } else if (h.kind === "vine") {
+            if (hitMe || hitOpp) { explodeAt(h.x, h.y, "vine", true); }
             if (hitMe) { g.mySlowPending = true; spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
             else if (hitOpp) { spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
           } else if (h.kind === "tree") {
-            if (hitMe && !g.myLaunch.active && (!h.lastTriggerMe || now3 - h.lastTriggerMe > TREE_TRIGGER_COOLDOWN_MS)) {
+            if (treeHitMe && !g.myLaunch.active && (!h.lastTriggerMe || now3 - h.lastTriggerMe > TREE_TRIGGER_COOLDOWN_MS)) {
               g.myLaunch = { active: true, vy: TREE_BOUNCE_VY };
+              applyHpDamage(true, WEAPON_DEFS.tree.maxDmg);
+              spawnParticles(h.x, h.y, 10, 3, ["#16a34a", "#4ade80"]);
               h.lastTriggerMe = now3;
             }
-            if (hitOpp && !g.oppLaunch.active && (!h.lastTriggerOpp || now3 - h.lastTriggerOpp > TREE_TRIGGER_COOLDOWN_MS)) {
+            if (treeHitOpp && !g.oppLaunch.active && (!h.lastTriggerOpp || now3 - h.lastTriggerOpp > TREE_TRIGGER_COOLDOWN_MS)) {
               g.oppLaunch = { active: true, vy: TREE_BOUNCE_VY };
+              applyHpDamage(false, WEAPON_DEFS.tree.maxDmg);
+              spawnParticles(h.x, h.y, 10, 3, ["#16a34a", "#4ade80"]);
               h.lastTriggerOpp = now3;
             }
             if (now3 - h.plantedAt > TREE_CONVERT_MS) {
-              growTerrainMound(h.x, h.y, 26);
+              growTerrainMound(h.x, h.y, TREE_MOUND_RADIUS);
               hzToRemove.add(idx);
             }
           }
@@ -581,15 +591,17 @@ export function GameCanvas({
           ctx.beginPath(); ctx.arc(4, -1, 2, 0, Math.PI * 2); ctx.fill();
         } else if (h.kind === "tree") {
           const age = Math.min(1, (Date.now() - h.plantedAt) / TREE_CONVERT_MS);
-          const scale = 0.5 + age * 0.5;
+          const scale = (0.55 + age * 0.45) * TREE_VISUAL_SCALE;
           ctx.scale(scale, scale);
           ctx.fillStyle = "#7c4a20";
-          ctx.fillRect(-2, -6, 4, 14);
+          ctx.fillRect(-3, -8, 6, 20);
+          ctx.fillStyle = "#166534";
+          ctx.beginPath(); ctx.arc(0, -20, 16, 0, Math.PI * 2); ctx.fill();
           ctx.fillStyle = "#16a34a";
-          ctx.beginPath(); ctx.arc(0, -14, 12, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(-9, -14, 11, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(9, -14, 11, 0, Math.PI * 2); ctx.fill();
           ctx.fillStyle = "#22c55e";
-          ctx.beginPath(); ctx.arc(-6, -10, 7, 0, Math.PI * 2); ctx.fill();
-          ctx.beginPath(); ctx.arc(6, -10, 7, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(0, -26, 9, 0, Math.PI * 2); ctx.fill();
         }
         ctx.restore();
       });
