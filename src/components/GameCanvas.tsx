@@ -659,16 +659,29 @@ export function GameCanvas({
         const outOfBounds = p.x < 0 || p.x >= CANVAS_W || p.y > CANVAS_H;
         const hitTerrain = p.x >= 0 && p.x < CANVAS_W && p.y >= g.terrain[Math.round(p.x)];
 
-        // 미니건: 착탄시 즉시 소량 데미지 + 미세 지형 파괴
-        if (p.isMinigunBullet && (outOfBounds || hitTerrain)) {
-          if (hitTerrain) {
-            destructTerrain(p.x, p.y, 4);
-            // 탱크에 직격 체크
-            if (Math.hypot(g.myX - p.x, g.myY - p.y) < 14) applyHpDamage(true, 1);
-            if (Math.hypot(g.oppX - p.x, g.oppY - p.y) < 14) applyHpDamage(false, 1);
+        // 미니건: 공중 비행 중에도 탱크 피격 체크 (히트박스 24px) + 지형 착탄시 소량 지형 파괴
+        if (p.isMinigunBullet) {
+          const hitMe = Math.hypot(g.myX - p.x, g.myY - p.y) < 24;
+          const hitOpp = Math.hypot(g.oppX - p.x, g.oppY - p.y) < 24;
+          
+          if (hitMe && p.owner !== "me") {
+            applyHpDamage(true, 1);
+            spawnParticles(p.x, p.y, 4, 2, ["#cbd5e1", "#fff"]);
+            toRemove.push(i);
+            continue;
           }
-          toRemove.push(i);
-          continue;
+          if (hitOpp && p.owner !== "opp") {
+            applyHpDamage(false, 1);
+            spawnParticles(p.x, p.y, 4, 2, ["#cbd5e1", "#fff"]);
+            toRemove.push(i);
+            continue;
+          }
+
+          if (outOfBounds || hitTerrain) {
+            if (hitTerrain) destructTerrain(p.x, p.y, 5);
+            toRemove.push(i);
+            continue;
+          }
         }
 
         if (outOfBounds || hitTerrain) {
