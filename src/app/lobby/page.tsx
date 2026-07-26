@@ -8,7 +8,7 @@ import { LogOut, Play, Sparkles, Users, Palette, Check, X, Pencil, ShieldAlert }
 import { AvatarEditor } from "@/components/AvatarEditor";
 import { GarageModal } from "@/components/GarageModal";
 import { GameCanvas } from "@/components/GameCanvas";
-import { TankId, DEFAULT_TANK_ID } from "@/lib/tanks";
+import { TankId, DEFAULT_TANK_ID, TANKS } from "@/lib/tanks";
 
 type MatchmakingState = "IDLE" | "SEARCHING" | "MATCHED";
 
@@ -35,6 +35,7 @@ export default function LobbyPage() {
   // Win record states
   const [wins, setWins] = useState(0);
   const [losses, setLosses] = useState(0);
+  const [tankStats, setTankStats] = useState<Record<string, { wins: number; losses: number }>>({});
 
   // Matchmaking & UI states
   const [matchState, setMatchState] = useState<MatchmakingState>("IDLE");
@@ -126,7 +127,7 @@ export default function LobbyPage() {
       }
     });
 
-    return bestId ? { tankId: bestId, rate: maxRate, wins: tankStats[bestId].wins, losses: tankStats[bestId].losses } : null;
+    return bestId ? { tankId: bestId as TankId, rate: maxRate, wins: tankStats[bestId as TankId].wins, losses: tankStats[bestId as TankId].losses } : null;
   })();
 
   const selectTank = (tankId: TankId) => {

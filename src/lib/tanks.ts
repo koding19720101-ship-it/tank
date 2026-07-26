@@ -79,7 +79,7 @@ export const TANKS: Record<TankId, TankConfig> = {
     tag: "자연 교란형 탱크",
     bodyColor: "#22c55e",
     maxHp: 135,
-    maxFuel: 120,
+    maxFuel: 60,
     weapons: ["vine", "tree", "flower"],
     description: "숲의 힘을 다루는 탱크. 직접적인 화력보다는 덩쿨, 나무, 꽃가루로 전장의 지형과 상대의 움직임/조준을 교란시킵니다.",
   },
