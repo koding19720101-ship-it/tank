@@ -595,22 +595,24 @@ export function GameCanvas({
             const now4 = Date.now();
             if (now4 - g.railgunLastDmgTime > RAILGUN_DMG_INTERVAL) {
               g.railgunLastDmgTime = now4;
-              // 레일건 선 위에 피격 대상 탱크가 있으면 데미지 (자신은 맞지 않음)
-              const sx0 = p.x, sy0 = p.y;
+              // 레일건 선 위에 피격 대상 탱크가 있으면 데미지 (자신은 절대 맞지 않음)
+              const sx0 = p.x + p.vx * 1.5, sy0 = p.y + p.vy * 1.5; // 탱크 포신 끝보다 앞에서 시작
               const tx0 = p.railgunTargetX ?? p.x, ty0 = p.railgunTargetY ?? p.y;
               const len = Math.hypot(tx0 - sx0, ty0 - sy0);
+              
               const checkTank = (tx: number, ty: number, targetIsMe: boolean) => {
-                if (len === 0) return;
-                // 발사 주체(owner)가 본인이면 본인(me)에게 데미지를 주지 않고, 상대방이면 상대방(opp)에게 데미지를 주지 않음
-                const ownerIsMe = p.owner === "me";
-                if (ownerIsMe && targetIsMe) return;
-                if (!ownerIsMe && !targetIsMe) return;
+                if (len <= 0) return;
+                // 내가 쏜 레이저는 나(me)에게 피해를 주지 않음 / 상대가 쏜 레이저는 상대(opp)에게 피해를 주지 않음
+                if (p.owner === "me" && targetIsMe) return;
+                if (p.owner === "opp" && !targetIsMe) return;
 
                 const t = ((tx - sx0) * (tx0 - sx0) + (ty - sy0) * (ty0 - sy0)) / (len * len);
                 const clampT = Math.max(0, Math.min(1, t));
                 const cx = sx0 + clampT * (tx0 - sx0);
                 const cy = sy0 + clampT * (ty0 - sy0);
-                if (Math.hypot(tx - cx, ty - cy) < 20) applyHpDamage(targetIsMe, WEAPON_DEFS.railgun.maxDmg);
+                if (Math.hypot(tx - cx, ty - cy) < 18) {
+                  applyHpDamage(targetIsMe, WEAPON_DEFS.railgun.maxDmg);
+                }
               };
               checkTank(g.myX, g.myY, true);
               checkTank(g.oppX, g.oppY, false);
