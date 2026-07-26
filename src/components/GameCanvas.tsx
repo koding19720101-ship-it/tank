@@ -8,8 +8,8 @@ import { WEAPON_DEFS, WeaponId, TANKS, TankId, DEFAULT_TANK_ID } from "@/lib/tan
 interface GameCanvasProps {
   socket: Socket;
   roomName: string;
-  myProfile: { id: string; name: string; image: string; tankId?: TankId };
-  opponentProfile: { id: string; name: string; image: string; tankId?: TankId };
+  myProfile: { id: string; name: string; image: string; tankId?: TankId; winRate?: number; wins?: number; losses?: number };
+  opponentProfile: { id: string; name: string; image: string; tankId?: TankId; winRate?: number; wins?: number; losses?: number };
   initialSeed: number;
   playersInfo: Array<{ socketId: string; x: number; hp: number }>;
   activeSocketId: string;
@@ -727,10 +727,12 @@ export function GameCanvas({
       // Player name labels above tanks
       ctx.font = "bold 11px system-ui";
       ctx.textAlign = "center";
+      const myText = myProfile.winRate !== undefined ? `${myProfile.name} (${myProfile.winRate}%)` : myProfile.name;
+      const oppText = opponentProfile.winRate !== undefined ? `${opponentProfile.name} (${opponentProfile.winRate}%)` : opponentProfile.name;
       ctx.fillStyle = "#4338ca";
-      ctx.fillText(myProfile.name, g.myX, g.myY - 28);
+      ctx.fillText(myText, g.myX, g.myY - 28);
       ctx.fillStyle = "#b91c1c";
-      ctx.fillText(opponentProfile.name, g.oppX, g.oppY - 28);
+      ctx.fillText(oppText, g.oppX, g.oppY - 28);
 
       raf = requestAnimationFrame(loop);
     };
@@ -786,7 +788,14 @@ export function GameCanvas({
         <div style={styles.hudSide}>
           <img src={myProfile.image} alt="me" style={{ ...styles.hudAvatar, borderColor: "#6366f1" }} />
           <div style={styles.hudInfo}>
-            <div style={styles.hudName}>{myProfile.name}</div>
+            <div style={styles.hudName}>
+              {myProfile.name}
+              {myProfile.winRate !== undefined && (
+                <span style={{ fontSize: "11px", color: "#38bdf8", marginLeft: "6px", backgroundColor: "rgba(56,189,248,0.2)", padding: "1px 6px", borderRadius: "10px" }}>
+                  {myProfile.winRate}%
+                </span>
+              )}
+            </div>
             <StatBar label="HP" value={uiMyHp} max={myTank.maxHp} color="#ef4444" icon={<Shield size={11} />} />
             <StatBar label="연료" value={uiMyFuel} max={myTank.maxFuel} color="#eab308" icon={<Zap size={11} />} />
           </div>
@@ -804,7 +813,14 @@ export function GameCanvas({
         <div style={{ ...styles.hudSide, flexDirection: "row-reverse" }}>
           <img src={opponentProfile.image} alt="opp" style={{ ...styles.hudAvatar, borderColor: "#f87171" }} />
           <div style={{ ...styles.hudInfo, alignItems: "flex-end" }}>
-            <div style={styles.hudName}>{opponentProfile.name}</div>
+            <div style={styles.hudName}>
+              {opponentProfile.winRate !== undefined && (
+                <span style={{ fontSize: "11px", color: "#38bdf8", marginRight: "6px", backgroundColor: "rgba(56,189,248,0.2)", padding: "1px 6px", borderRadius: "10px" }}>
+                  {opponentProfile.winRate}%
+                </span>
+              )}
+              {opponentProfile.name}
+            </div>
             <StatBar label="HP" value={uiOppHp} max={oppTank.maxHp} color="#ef4444" icon={<Shield size={11} />} />
           </div>
         </div>

@@ -17,6 +17,9 @@ interface PlayerProfile {
   name: string;
   image: string;
   tankId?: TankId;
+  wins?: number;
+  losses?: number;
+  winRate?: number;
 }
 
 interface GameStartData {
@@ -162,11 +165,14 @@ export default function LobbyPage() {
       name: currentSession?.user?.name || "탱크 유저",
       image: activeAvatar,
       tankId: tankIdRef.current,
+      wins,
+      losses,
+      winRate,
     };
 
     console.log("[lobby] emitting join-game-room", roomName, playerProfile.name);
     socketRef.current.emit("join-game-room", { roomName, profile: playerProfile });
-  }, [matchState, roomName]);
+  }, [matchState, roomName, wins, losses, winRate]);
 
   const connectSocket = () => socketRef.current!;
 
@@ -177,6 +183,9 @@ export default function LobbyPage() {
       name: session.user.name || "탱크 유저",
       image: customAvatar || getBlankWhiteAvatar(),
       tankId: selectedTankId,
+      wins,
+      losses,
+      winRate,
     };
     setMatchState("SEARCHING");
     socketRef.current.emit("join-queue", playerProfile);
@@ -397,13 +406,13 @@ export default function LobbyPage() {
                 <div style={styles.versusContainer}>
                   <div style={styles.versusPlayer}>
                     <img src={displayAvatar} alt="You" style={styles.vsAvatar} />
-                    <div style={styles.vsName}>{session.user.name}</div>
+                    <div style={styles.vsName}>{session.user.name} ({winRate}%)</div>
                     <div style={styles.vsLabel}>나</div>
                   </div>
                   <div style={styles.vsCircle}>VS</div>
                   <div style={styles.versusPlayer}>
                     <img src={opponent?.image} alt="Opponent" style={styles.vsAvatar} />
-                    <div style={styles.vsName}>{opponent?.name}</div>
+                    <div style={styles.vsName}>{opponent?.name} {opponent?.winRate !== undefined ? `(${opponent.winRate}%)` : ""}</div>
                     <div style={styles.vsLabel}>상대방</div>
                   </div>
                 </div>
