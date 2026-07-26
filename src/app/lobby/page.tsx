@@ -82,7 +82,7 @@ export default function LobbyPage() {
       const saved = localStorage.getItem(`custom_avatar_${userId}`);
       setCustomAvatar(saved || getBlankWhiteAvatar());
       const savedTank = localStorage.getItem(`selected_tank_${userId}`) as TankId | null;
-      if (savedTank === "chrome" || savedTank === "shotgun") setSelectedTankId(savedTank);
+      if (savedTank === "chrome" || savedTank === "shotgun" || savedTank === "forest") setSelectedTankId(savedTank);
     }
   }, [session]);
 
