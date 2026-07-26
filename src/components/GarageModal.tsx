@@ -108,7 +108,11 @@ export function GarageModal({ onClose, currentTankId, onSelectTank }: GarageModa
                     <div style={styles.weaponHeader}>
                       <span style={{ ...styles.weaponBadge, backgroundColor: w.color }}>{w.label}</span>
                       <span style={styles.weaponDamage}>
-                        {w.splitCount
+                        {wid === "vine"
+                          ? "씨앗 5발 · 이속 절반 감소"
+                          : wid === "tree"
+                          ? "튕겨나감 · 시간 경과 후 지형화"
+                          : w.splitCount
                           ? `분열 ${w.splitCount}갈래 · 개당 ${w.splitDamage}뎀`
                           : `데미지 ${w.maxDmg}`}
                       </span>
@@ -152,6 +156,9 @@ function weaponDesc(wid: string): string {
     case "buckshot": return "발사 후 공중에서 5갈래로 잘게 분열되는 산탄입니다. 넓은 지역에 골고루 피해를 뿌립니다.";
     case "incendiary": return "5갈래로 분열되는 소이탄입니다. 데미지는 집속탄과 같지만, 적중한 대상에게 불이 붙어 시간이 지나며 추가 화상 피해를 입힙니다.";
     case "mine": return "3발의 지뢰를 발사합니다. 지형에 착지하면 즉시 터지지 않고 설치되며, 아군이든 적이든 밟으면 폭발합니다.";
+    case "vine": return "5개의 씨앗을 날립니다. 바닥에 닿으면 덩쿨이 자라나며, 덩쿨에 닿으면 사라지면서 그 탱크는 다음 턴 이동속도가 절반으로 줄어듭니다.";
+    case "tree": return "닿은 자리에 세계수가 자라납니다. 나무에 맞으면 위로 튕겨나가며, 심어진 지 몇 초 후 나무는 그대로 단단한 지형으로 변합니다.";
+    case "flower": return "꽃가루 이펙트를 남기는 탄환입니다. 적중한 상대의 조준 각도가 -5~+5 사이로 랜덤하게 흐트러집니다.";
     default: return "";
   }
 }

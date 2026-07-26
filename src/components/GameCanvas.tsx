@@ -28,10 +28,14 @@ interface Projectile {
   owner: "me" | "opp";
 }
 
-interface Mine {
+interface Hazard {
   id: string;
   x: number;
   y: number;
+  kind: "mine" | "vine" | "tree";
+  plantedAt: number;
+  lastTriggerMe?: number;
+  lastTriggerOpp?: number;
 }
 
 interface BurnState {
@@ -52,6 +56,9 @@ const GRAVITY = 0.25;
 const BURN_DMG_PER_TICK = 2;
 const BURN_TICKS = 4;
 const MINE_TRIGGER_RADIUS = 13;
+const TREE_CONVERT_MS = 4000;
+const TREE_BOUNCE_VY = -7.5;
+const TREE_TRIGGER_COOLDOWN_MS = 1500;
 
 export function GameCanvas({
   socket,
@@ -82,10 +89,14 @@ export function GameCanvas({
     oppHp: oppTank.maxHp,
     oppDir: -1,
     projectiles: [] as Projectile[],
-    mines: [] as Mine[],
+    hazards: [] as Hazard[],
     particles: [] as Particle[],
     myBurn: null as BurnState | null,
     oppBurn: null as BurnState | null,
+    mySlowPending: false,
+    mySlowThisTurn: false,
+    myLaunch: { active: false, vy: 0 },
+    oppLaunch: { active: false, vy: 0 },
     isMyTurn: activeSocketId === socket.id,
     activeSocketId: activeSocketId,
     angle: 45,
@@ -170,7 +181,11 @@ export function GameCanvas({
       g.turnTimer = 20;
       setUiIsMyTurn(g.isMyTurn);
       setUiTimer(20);
-      if (g.isMyTurn) { g.myFuel = myTank.maxFuel; setUiMyFuel(myTank.maxFuel); }
+      if (g.isMyTurn) {
+        g.myFuel = myTank.maxFuel; setUiMyFuel(myTank.maxFuel);
+        g.mySlowThisTurn = g.mySlowPending;
+        g.mySlowPending = false;
+      }
     };
 
     const onEnded = ({ reason }: { reason: string }) => {
@@ -199,6 +214,21 @@ export function GameCanvas({
         const dy = Math.sqrt(radius * radius - dx * dx);
         const targetY = cy + dy;
         if (t[x] < targetY) t[x] = Math.min(CANVAS_H, Math.max(t[x], targetY));
+      }
+    }
+  };
+
+  // 세계수가 지형으로 변할 때 땅을 융기시킴
+  const growTerrainMound = (cx: number, baseY: number, radius: number) => {
+    const t = G.current.terrain;
+    const start = Math.max(0, Math.floor(cx - radius));
+    const end = Math.min(CANVAS_W - 1, Math.ceil(cx + radius));
+    for (let x = start; x <= end; x++) {
+      const dx = x - cx;
+      if (Math.abs(dx) < radius) {
+        const dy = Math.sqrt(radius * radius - dx * dx);
+        const targetY = baseY - dy * 0.6;
+        if (t[x] > targetY) t[x] = targetY;
       }
     }
   };
@@ -233,7 +263,7 @@ export function GameCanvas({
       vy: -Math.sin(angRad) * spd,
       type: wep, owner,
     };
-    if (def.splitCount) { proj.splitTimer = 45; proj.isSplit = false; }
+    if (def.splitCount) { proj.splitTimer = def.splitDelay ?? 45; proj.isSplit = false; }
     G.current.projectiles.push(proj);
   };
 
@@ -287,6 +317,12 @@ export function GameCanvas({
         const dmg = Math.round(maxDmg * (1 - dist / radius));
         applyHpDamage(isMe, dmg);
         if (def.incendiary) igniteTank(isMe);
+        if (def.flowerEffect && isMe) {
+          const delta = Math.random() * 10 - 5; // -5 ~ 5
+          const newAngle = Math.max(0, Math.min(180, Math.round(g.angle + delta)));
+          g.angle = newAngle;
+          setUiAngle(newAngle);
+        }
       }
     };
 
@@ -318,13 +354,14 @@ export function GameCanvas({
         const now = Date.now();
         const dt = (now - lastFuelUpdate) / 1000;
         let moved = false;
+        const moveSpeed = g.mySlowThisTurn ? 0.75 : 1.5;
 
         if (g.keys["KeyA"]) {
-          g.myX = Math.max(10, g.myX - 1.5);
+          g.myX = Math.max(10, g.myX - moveSpeed);
           g.myDir = -1;
           moved = true;
         } else if (g.keys["KeyD"]) {
-          g.myX = Math.min(CANVAS_W - 10, g.myX + 1.5);
+          g.myX = Math.min(CANVAS_W - 10, g.myX + moveSpeed);
           g.myDir = 1;
           moved = true;
         }
@@ -339,9 +376,23 @@ export function GameCanvas({
         }
       }
 
-      // ─ Gravity: snap tanks to terrain ─
-      if (g.terrain[Math.round(g.myX)] !== undefined) g.myY = g.terrain[Math.round(g.myX)];
-      if (g.terrain[Math.round(g.oppX)] !== undefined) g.oppY = g.terrain[Math.round(g.oppX)];
+      // ─ Gravity: snap tanks to terrain (세계수에 맞아 튕겨나간 경우는 예외) ─
+      if (g.myLaunch.active) {
+        g.myY += g.myLaunch.vy;
+        g.myLaunch.vy += GRAVITY * 0.6;
+        const groundY = g.terrain[Math.round(g.myX)];
+        if (groundY !== undefined && g.myY >= groundY) { g.myY = groundY; g.myLaunch.active = false; }
+      } else if (g.terrain[Math.round(g.myX)] !== undefined) {
+        g.myY = g.terrain[Math.round(g.myX)];
+      }
+      if (g.oppLaunch.active) {
+        g.oppY += g.oppLaunch.vy;
+        g.oppLaunch.vy += GRAVITY * 0.6;
+        const groundYO = g.terrain[Math.round(g.oppX)];
+        if (groundYO !== undefined && g.oppY >= groundYO) { g.oppY = groundYO; g.oppLaunch.active = false; }
+      } else if (g.terrain[Math.round(g.oppX)] !== undefined) {
+        g.oppY = g.terrain[Math.round(g.oppX)];
+      }
 
       // ─ Burn (화상) DOT 처리 ─
       const now2 = Date.now();
@@ -358,19 +409,36 @@ export function GameCanvas({
         if (g.oppBurn.ticksLeft <= 0) g.oppBurn = null;
       }
 
-      // ─ 지뢰 밟기 판정 ─
-      if (g.mines.length > 0) {
-        const minesToRemove: number[] = [];
-        g.mines.forEach((m, idx) => {
-          const hitMe = Math.abs(g.myX - m.x) < MINE_TRIGGER_RADIUS;
-          const hitOpp = Math.abs(g.oppX - m.x) < MINE_TRIGGER_RADIUS;
-          if (hitMe || hitOpp) {
-            explodeAt(m.x, m.y, "mine", false);
-            minesToRemove.push(idx);
+      // ─ 설치물(지뢰/덩쿨/세계수) 판정 ─
+      if (g.hazards.length > 0) {
+        const now3 = Date.now();
+        const hzToRemove = new Set<number>();
+        g.hazards.forEach((h, idx) => {
+          const hitMe = Math.abs(g.myX - h.x) < MINE_TRIGGER_RADIUS;
+          const hitOpp = Math.abs(g.oppX - h.x) < MINE_TRIGGER_RADIUS;
+
+          if (h.kind === "mine") {
+            if (hitMe || hitOpp) { explodeAt(h.x, h.y, "mine", false); hzToRemove.add(idx); }
+          } else if (h.kind === "vine") {
+            if (hitMe) { g.mySlowPending = true; spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
+            else if (hitOpp) { spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
+          } else if (h.kind === "tree") {
+            if (hitMe && !g.myLaunch.active && (!h.lastTriggerMe || now3 - h.lastTriggerMe > TREE_TRIGGER_COOLDOWN_MS)) {
+              g.myLaunch = { active: true, vy: TREE_BOUNCE_VY };
+              h.lastTriggerMe = now3;
+            }
+            if (hitOpp && !g.oppLaunch.active && (!h.lastTriggerOpp || now3 - h.lastTriggerOpp > TREE_TRIGGER_COOLDOWN_MS)) {
+              g.oppLaunch = { active: true, vy: TREE_BOUNCE_VY };
+              h.lastTriggerOpp = now3;
+            }
+            if (now3 - h.plantedAt > TREE_CONVERT_MS) {
+              growTerrainMound(h.x, h.y, 26);
+              hzToRemove.add(idx);
+            }
           }
         });
-        if (minesToRemove.length) {
-          g.mines = g.mines.filter((_, idx) => !minesToRemove.includes(idx));
+        if (hzToRemove.size) {
+          g.hazards = g.hazards.filter((_, idx) => !hzToRemove.has(idx));
         }
       }
 
@@ -392,12 +460,13 @@ export function GameCanvas({
           if (p.splitTimer <= 0) {
             p.isSplit = true;
             const count = def.splitCount;
+            const spread = def.spreadFactor ?? 1.7;
             for (let j = 0; j < count; j++) {
               const offset = j - (count - 1) / 2;
               g.projectiles.push({
                 id: Math.random().toString(36).slice(2),
                 x: p.x, y: p.y,
-                vx: p.vx + offset * 1.7, vy: p.vy - 1,
+                vx: p.vx + offset * spread, vy: p.vy - 1,
                 type: p.type, isSplit: true, owner: p.owner,
               });
             }
@@ -410,11 +479,18 @@ export function GameCanvas({
         const outOfBounds = p.x < 0 || p.x >= CANVAS_W || p.y > CANVAS_H;
         const hitTerrain = p.x >= 0 && p.x < CANVAS_W && p.y >= g.terrain[Math.round(p.x)];
         if (outOfBounds || hitTerrain) {
-          if (def.isMine) {
-            // 지뢰는 착탄시 폭발하지 않고 지형 위에 설치됨
+          if (def.groundEffect) {
+            // 지뢰/덩쿨/세계수는 착탄시 즉시 터지지 않고 설치됨
             if (hitTerrain) {
-              g.mines.push({ id: Math.random().toString(36).slice(2), x: p.x, y: g.terrain[Math.round(p.x)] });
-              spawnParticles(p.x, p.y, 6, 2, ["#84cc16", "#a3e635"]);
+              g.hazards.push({
+                id: Math.random().toString(36).slice(2),
+                x: p.x, y: g.terrain[Math.round(p.x)],
+                kind: def.groundEffect, plantedAt: Date.now(),
+              });
+              const palette = def.groundEffect === "vine" ? ["#65a30d", "#a3e635"]
+                : def.groundEffect === "tree" ? ["#16a34a", "#4ade80", "#166534"]
+                : undefined;
+              spawnParticles(p.x, p.y, 6, 2, palette);
             }
           } else {
             handleExplosion(p);
@@ -482,18 +558,39 @@ export function GameCanvas({
       for (let x = 1; x < CANVAS_W; x++) ctx.lineTo(x, g.terrain[x]);
       ctx.strokeStyle = "#f2d9a8"; ctx.lineWidth = 2.5; ctx.stroke();
 
-      // 지뢰 표시
-      g.mines.forEach(m => {
+      // 설치물(지뢰/덩쿨/세계수) 표시
+      g.hazards.forEach(h => {
         ctx.save();
-        ctx.translate(m.x, m.y - 3);
-        ctx.beginPath();
-        ctx.moveTo(0, -7); ctx.lineTo(7, 0); ctx.lineTo(0, 7); ctx.lineTo(-7, 0);
-        ctx.closePath();
-        ctx.fillStyle = "#4d7c0f";
-        ctx.fill();
-        ctx.strokeStyle = "#bef264"; ctx.lineWidth = 1.5; ctx.stroke();
-        ctx.beginPath(); ctx.arc(0, 0, 2, 0, Math.PI * 2);
-        ctx.fillStyle = "#facc15"; ctx.fill();
+        ctx.translate(h.x, h.y - 3);
+        if (h.kind === "mine") {
+          ctx.beginPath();
+          ctx.moveTo(0, -7); ctx.lineTo(7, 0); ctx.lineTo(0, 7); ctx.lineTo(-7, 0);
+          ctx.closePath();
+          ctx.fillStyle = "#4d7c0f"; ctx.fill();
+          ctx.strokeStyle = "#bef264"; ctx.lineWidth = 1.5; ctx.stroke();
+          ctx.beginPath(); ctx.arc(0, 0, 2, 0, Math.PI * 2);
+          ctx.fillStyle = "#facc15"; ctx.fill();
+        } else if (h.kind === "vine") {
+          ctx.strokeStyle = "#4d7c0f"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
+          ctx.beginPath();
+          ctx.moveTo(-6, 4); ctx.quadraticCurveTo(-4, -8, 0, -6);
+          ctx.quadraticCurveTo(4, -4, 6, 4);
+          ctx.stroke();
+          ctx.fillStyle = "#84cc16";
+          ctx.beginPath(); ctx.arc(-4, -3, 2, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(4, -1, 2, 0, Math.PI * 2); ctx.fill();
+        } else if (h.kind === "tree") {
+          const age = Math.min(1, (Date.now() - h.plantedAt) / TREE_CONVERT_MS);
+          const scale = 0.5 + age * 0.5;
+          ctx.scale(scale, scale);
+          ctx.fillStyle = "#7c4a20";
+          ctx.fillRect(-2, -6, 4, 14);
+          ctx.fillStyle = "#16a34a";
+          ctx.beginPath(); ctx.arc(0, -14, 12, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#22c55e";
+          ctx.beginPath(); ctx.arc(-6, -10, 7, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(6, -10, 7, 0, Math.PI * 2); ctx.fill();
+        }
         ctx.restore();
       });
 
