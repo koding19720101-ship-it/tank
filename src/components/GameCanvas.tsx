@@ -450,13 +450,17 @@ export function GameCanvas({
           } else if (h.kind === "tree") {
             if (treeHitMe && !g.myLaunch.active && (!h.lastTriggerMe || now3 - h.lastTriggerMe > TREE_TRIGGER_COOLDOWN_MS)) {
               g.myLaunch = { active: true, vy: TREE_BOUNCE_VY };
-              applyHpDamage(true, WEAPON_DEFS.tree.maxDmg);
+              if (!h.lastTriggerMe) {
+                applyHpDamage(true, WEAPON_DEFS.tree.maxDmg);
+              }
               spawnParticles(h.x, h.y, 10, 3, ["#16a34a", "#4ade80"]);
               h.lastTriggerMe = now3;
             }
             if (treeHitOpp && !g.oppLaunch.active && (!h.lastTriggerOpp || now3 - h.lastTriggerOpp > TREE_TRIGGER_COOLDOWN_MS)) {
               g.oppLaunch = { active: true, vy: TREE_BOUNCE_VY };
-              applyHpDamage(false, WEAPON_DEFS.tree.maxDmg);
+              if (!h.lastTriggerOpp) {
+                applyHpDamage(false, WEAPON_DEFS.tree.maxDmg);
+              }
               spawnParticles(h.x, h.y, 10, 3, ["#16a34a", "#4ade80"]);
               h.lastTriggerOpp = now3;
             }
