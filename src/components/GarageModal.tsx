@@ -64,6 +64,39 @@ export function GarageModal({ onClose, currentTankId, onSelectTank }: GarageModa
               <span style={styles.tankTag}>{tank.tag}</span>
             </div>
 
+            {/* Tank Select Buttons */}
+            <div style={{ display: "flex", gap: "6px", width: "100%", marginTop: "10px", marginBottom: "10px" }}>
+              {TANK_ORDER.map((tid) => {
+                const t = TANKS[tid];
+                const isSelected = tid === currentTankId;
+                return (
+                  <button
+                    key={tid}
+                    onClick={() => onSelectTank(tid)}
+                    style={{
+                      flex: 1,
+                      padding: "8px 4px",
+                      borderRadius: "8px",
+                      border: isSelected ? "2px solid #6366f1" : "1px solid rgba(255,255,255,0.1)",
+                      backgroundColor: isSelected ? "rgba(99,102,241,0.2)" : "rgba(255,255,255,0.05)",
+                      color: isSelected ? "#ffffff" : "#94a3b8",
+                      fontSize: "12px",
+                      fontWeight: isSelected ? "bold" : "normal",
+                      cursor: "pointer",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: "4px",
+                      transition: "all 0.2s ease",
+                    }}
+                  >
+                    <div style={{ width: "12px", height: "12px", borderRadius: "50%", backgroundColor: t.bodyColor, border: "1px solid #ffffff" }}></div>
+                    <span>{t.name.split(" ")[0]}</span>
+                  </button>
+                );
+              })}
+            </div>
+
             <p style={styles.tankDesc}>{tank.description}</p>
           </div>
 
