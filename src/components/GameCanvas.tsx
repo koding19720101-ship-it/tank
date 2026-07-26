@@ -1048,13 +1048,17 @@ export function GameCanvas({
     return () => cancelAnimationFrame(raf);
   }, [socket, roomName, myProfile, opponentProfile, initialSeed, onGameEnded]);
 
-  // ── Mouse aiming ─────────────────────────────────────────────────────
-  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // ── Mouse & Touch Aiming (마우스 누르고 있는 동안/터치 드래그로 조종) ──────────────────
+  const isPointerDownRef = useRef(false);
+
+  const updateAiming = (clientX: number, clientY: number) => {
     const g = G.current;
-    if (!g.isMyTurn || g.projectiles.length > 0 || g.firedThisTurn || g.gameOver) return;
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    if (!g.isMyTurn || g.projectiles.length > 0 || g.firedThisTurn || g.gameOver || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const scaleX = CANVAS_W / rect.width;
+    const scaleY = CANVAS_H / rect.height;
+    const mx = (clientX - rect.left) * scaleX;
+    const my = (clientY - rect.top) * scaleY;
     const dx = mx - g.myX;
     const dy = (g.myY - 9) - my;
     let ang = Math.round((Math.atan2(dy, dx) * 180) / Math.PI);
@@ -1064,7 +1068,24 @@ export function GameCanvas({
     setUiAngle(ang); setUiPower(pwr);
   };
 
-  const handleClick = () => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    isPointerDownRef.current = true;
+    updateAiming(e.clientX, e.clientY);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (isPointerDownRef.current) {
+      updateAiming(e.clientX, e.clientY);
+    } else {
+      updateAiming(e.clientX, e.clientY);
+    }
+  };
+
+  const handlePointerUp = () => {
+    isPointerDownRef.current = false;
+  };
+
+  const handleFireBtn = () => {
     const g = G.current;
     if (!g.isMyTurn || g.projectiles.length > 0 || g.firedThisTurn || g.gameOver) return;
     g.firedThisTurn = true;
@@ -1075,14 +1096,27 @@ export function GameCanvas({
     });
   };
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
+  const cycleWeapon = () => {
     const g = G.current;
     if (!g.isMyTurn) return;
     const idx = myWeapons.indexOf(g.weapon);
-    const next = myWeapons[(idx + (e.deltaY > 0 ? 1 : -1) + myWeapons.length) % myWeapons.length];
+    const next = myWeapons[(idx + 1) % myWeapons.length];
     g.weapon = next;
     setUiWeapon(next);
+  };
+
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    cycleWeapon();
+  };
+
+  // 모바일 이동 터치 버튼 핸들러
+  const handleTouchMoveStart = (code: string) => {
+    G.current.keys[code] = true;
+  };
+
+  const handleTouchMoveEnd = (code: string) => {
+    G.current.keys[code] = false;
   };
 
   const weaponDef = WEAPON_DEFS[uiWeapon];
@@ -1140,21 +1174,56 @@ export function GameCanvas({
           width={CANVAS_W}
           height={CANVAS_H}
           style={styles.canvas}
-          onMouseMove={handleMouseMove}
-          onClick={handleClick}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
           onWheel={handleWheel}
         />
       </div>
 
-      {/* Footer HUD */}
-      <div style={styles.footer}>
-        <span style={styles.hint}><kbd style={styles.kbd}>A</kbd><kbd style={styles.kbd}>D</kbd> 이동</span>
-        <span style={styles.hint}><kbd style={styles.kbd}>마우스 이동</kbd> 조준  <kbd style={styles.kbd}>클릭</kbd> 발사</span>
-        <span style={styles.hint}><kbd style={styles.kbd}>스크롤</kbd> 무기 전환</span>
-        <span style={{ ...styles.weaponLabel, color: weaponDef.color }}>
-          {weaponDef.label}
-        </span>
-        <span style={styles.hint}>각도 {uiAngle}°  세기 {uiPower}</span>
+      {/* Mobile & Desktop Control Bar */}
+      <div style={styles.controlBar}>
+        {/* Left/Right movement buttons for mobile */}
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button
+            onTouchStart={() => handleTouchMoveStart("KeyA")}
+            onTouchEnd={() => handleTouchMoveEnd("KeyA")}
+            onMouseDown={() => handleTouchMoveStart("KeyA")}
+            onMouseUp={() => handleTouchMoveEnd("KeyA")}
+            style={styles.mobileDirBtn}
+          >
+            ◀ A (좌)
+          </button>
+          <button
+            onTouchStart={() => handleTouchMoveStart("KeyD")}
+            onTouchEnd={() => handleTouchMoveEnd("KeyD")}
+            onMouseDown={() => handleTouchMoveStart("KeyD")}
+            onMouseUp={() => handleTouchMoveEnd("KeyD")}
+            style={styles.mobileDirBtn}
+          >
+            D (우) ▶
+          </button>
+        </div>
+
+        {/* Weapon Toggle Button */}
+        <button onClick={cycleWeapon} style={{ ...styles.weaponToggleBtn, borderColor: weaponDef.color }}>
+          <span style={{ color: weaponDef.color, fontWeight: "bold" }}>{weaponDef.label}</span>
+          <span style={{ fontSize: "10px", color: "#94a3b8" }}>(터치하여 무기 변경)</span>
+        </button>
+
+        {/* Fire Button */}
+        <button
+          onClick={handleFireBtn}
+          disabled={!uiIsMyTurn}
+          style={{
+            ...styles.fireBtn,
+            opacity: uiIsMyTurn ? 1 : 0.4,
+            cursor: uiIsMyTurn ? "pointer" : "not-allowed",
+          }}
+        >
+          🚀 발사! ({uiAngle}° / {uiPower}P)
+        </button>
       </div>
     </div>
   );
@@ -1175,20 +1244,20 @@ function StatBar({ label, value, max, color, icon }: { label: string; value: num
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrapper: { display: "flex", flexDirection: "column", gap: "10px", width: "100%", maxWidth: "840px", background: "#1e293b", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "16px", padding: "18px", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.6)" },
-  hud: { display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: "12px" },
-  hudSide: { display: "flex", alignItems: "center", gap: "10px", width: "230px" },
-  hudAvatar: { width: "46px", height: "46px", borderRadius: "50%", border: "2px solid", objectFit: "cover", background: "#fff", flexShrink: 0 },
-  hudInfo: { display: "flex", flexDirection: "column" },
-  hudName: { fontSize: "13px", fontWeight: "700", color: "#e2e8f0", marginBottom: "4px" },
-  hudCenter: { display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" },
-  myTurn: { background: "linear-gradient(135deg,#10b981,#059669)", color: "#fff", padding: "5px 16px", borderRadius: "20px", fontWeight: "bold", fontSize: "13px", boxShadow: "0 0 12px rgba(16,185,129,0.4)" },
-  oppTurn: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#94a3b8", padding: "4px 14px", borderRadius: "20px", fontWeight: "bold", fontSize: "13px" },
+  wrapper: { display: "flex", flexDirection: "column", gap: "10px", width: "100%", maxWidth: "840px", background: "#1e293b", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "16px", padding: "14px", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.6)", boxSizing: "border-box" },
+  hud: { display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: "10px", gap: "6px" },
+  hudSide: { display: "flex", alignItems: "center", gap: "8px", maxWidth: "230px", flex: 1 },
+  hudAvatar: { width: "40px", height: "40px", borderRadius: "50%", border: "2px solid", objectFit: "cover", background: "#fff", flexShrink: 0 },
+  hudInfo: { display: "flex", flexDirection: "column", minWidth: 0 },
+  hudName: { fontSize: "12px", fontWeight: "700", color: "#e2e8f0", marginBottom: "3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  hudCenter: { display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", flexShrink: 0 },
+  myTurn: { background: "linear-gradient(135deg,#10b981,#059669)", color: "#fff", padding: "4px 12px", borderRadius: "20px", fontWeight: "bold", fontSize: "12px", boxShadow: "0 0 12px rgba(16,185,129,0.4)", whiteSpace: "nowrap" },
+  oppTurn: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#94a3b8", padding: "4px 12px", borderRadius: "20px", fontWeight: "bold", fontSize: "12px", whiteSpace: "nowrap" },
   timer: { fontSize: "11px", color: "#94a3b8" },
-  canvasWrap: { borderRadius: "10px", overflow: "hidden", border: "1px solid rgba(255,255,255,0.05)", cursor: "crosshair" },
-  canvas: { display: "block" },
-  footer: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(15,23,42,0.4)", borderRadius: "8px", padding: "10px 16px", flexWrap: "wrap", gap: "8px" },
-  hint: { fontSize: "11px", color: "#94a3b8", display: "flex", alignItems: "center", gap: "4px" },
-  kbd: { background: "#334155", border: "1px solid #475569", color: "#f8fafc", padding: "1px 5px", borderRadius: "3px", fontFamily: "monospace", fontSize: "10px" },
-  weaponLabel: { fontSize: "13px", fontWeight: "bold" },
+  canvasWrap: { width: "100%", aspectRatio: "800 / 500", borderRadius: "10px", overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", cursor: "crosshair", position: "relative", touchAction: "none" },
+  canvas: { width: "100%", height: "100%", display: "block", touchAction: "none" },
+  controlBar: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(15,23,42,0.6)", borderRadius: "12px", padding: "10px 12px", gap: "8px", flexWrap: "wrap" },
+  mobileDirBtn: { padding: "10px 16px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.1)", color: "#ffffff", fontSize: "13px", fontWeight: "bold", cursor: "pointer", userSelect: "none", touchAction: "manipulation" },
+  weaponToggleBtn: { display: "flex", flexDirection: "column", alignItems: "center", padding: "6px 14px", borderRadius: "8px", border: "1.5px solid", backgroundColor: "rgba(15,23,42,0.8)", cursor: "pointer", touchAction: "manipulation" },
+  fireBtn: { flex: 1, minWidth: "120px", padding: "12px 18px", borderRadius: "8px", border: "none", background: "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)", color: "#ffffff", fontSize: "14px", fontWeight: "bold", boxShadow: "0 4px 12px rgba(239,68,68,0.4)", touchAction: "manipulation" },
 };
