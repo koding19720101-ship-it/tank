@@ -357,7 +357,26 @@ export function GameCanvas({
         const now = Date.now();
         const dt = (now - lastFuelUpdate) / 1000;
         let moved = false;
-        const moveSpeed = g.mySlowThisTurn ? 0.75 : 1.5;
+        // 경사각(Slope) 계산: 이동하려는 방향의 지형 높이 차이 분석
+        const currX = Math.round(g.myX);
+        const y0 = g.terrain[currX] ?? 0;
+        let speedMultiplier = 1;
+
+        if (g.keys["KeyA"] || g.keys["KeyD"]) {
+          const targetDir = g.keys["KeyA"] ? -1 : 1;
+          const nextX = Math.min(CANVAS_W - 1, Math.max(0, currX + targetDir * 3));
+          const y1 = g.terrain[nextX] ?? y0;
+          const dy = y0 - y1; // dy > 0 이면 오르막길
+          if (dy > 0) {
+            const slopeAngleRad = Math.atan2(dy, 3);
+            const slopeAngleDeg = (slopeAngleRad * 180) / Math.PI;
+            if (slopeAngleDeg >= 80) {
+              speedMultiplier = 0.5; // 80도 이상의 벽을 탈 때 속도 50% 감쇼
+            }
+          }
+        }
+
+        const moveSpeed = (g.mySlowThisTurn ? 0.75 : 1.5) * speedMultiplier;
 
         if (g.keys["KeyA"]) {
           g.myX = Math.max(10, g.myX - moveSpeed);

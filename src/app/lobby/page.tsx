@@ -29,6 +29,10 @@ export default function LobbyPage() {
   const { data: session, status, update: updateSession } = useAuthSession();
   const router = useRouter();
 
+  // Win record states
+  const [wins, setWins] = useState(0);
+  const [losses, setLosses] = useState(0);
+
   // Matchmaking & UI states
   const [matchState, setMatchState] = useState<MatchmakingState>("IDLE");
   const [searchDuration, setSearchDuration] = useState(0);
@@ -83,8 +87,16 @@ export default function LobbyPage() {
       setCustomAvatar(saved || getBlankWhiteAvatar());
       const savedTank = localStorage.getItem(`selected_tank_${userId}`) as TankId | null;
       if (savedTank === "chrome" || savedTank === "shotgun" || savedTank === "forest") setSelectedTankId(savedTank);
+      
+      const w = parseInt(localStorage.getItem(`user_wins_${userId}`) || "0", 10);
+      const l = parseInt(localStorage.getItem(`user_losses_${userId}`) || "0", 10);
+      setWins(w);
+      setLosses(l);
     }
   }, [session]);
+
+  const totalGames = wins + losses;
+  const winRate = totalGames > 0 ? Math.round((wins / totalGames) * 100) : 0;
 
   const selectTank = (tankId: TankId) => {
     setSelectedTankId(tankId);
@@ -223,12 +235,26 @@ export default function LobbyPage() {
     setOpponent(null);
     setRoomName(null);
 
+    const userId = session?.user ? ((session.user as any).id || session.user.email || "default") : null;
+
     if (reason === "defeat") {
+      if (userId) {
+        const newLosses = losses + 1;
+        setLosses(newLosses);
+        localStorage.setItem(`user_losses_${userId}`, newLosses.toString());
+      }
       alert("패배했습니다! 다음엔 꼭 이겨보세요. 💪");
-    } else if (reason === "victory") {
-      alert("승리했습니다! 🏆 훌륭한 포격이었어요!");
-    } else if (reason === "opponent_left") {
-      alert("상대방이 게임에서 탈주하여 승리했습니다! 🏆");
+    } else if (reason === "victory" || reason === "opponent_left") {
+      if (userId) {
+        const newWins = wins + 1;
+        setWins(newWins);
+        localStorage.setItem(`user_wins_${userId}`, newWins.toString());
+      }
+      if (reason === "opponent_left") {
+        alert("상대방이 게임에서 탈주하여 승리했습니다! 🏆");
+      } else {
+        alert("승리했습니다! 🏆 훌륭한 포격이었어요!");
+      }
     } else {
       alert("게임이 종료되었습니다!");
     }
@@ -301,6 +327,9 @@ export default function LobbyPage() {
           ) : (
             <button onClick={startEditingNickname} style={styles.nicknameBtn} title="닉네임 변경">
               <span>{session.user.name}</span>
+              <span style={{ fontSize: "12px", color: "#38bdf8", fontWeight: "bold", backgroundColor: "rgba(56, 189, 248, 0.15)", padding: "2px 8px", borderRadius: "12px", marginLeft: "4px" }}>
+                승률 {winRate}% ({wins}승 {losses}패)
+              </span>
               <Pencil size={12} color="#6366f1" />
             </button>
           )}
