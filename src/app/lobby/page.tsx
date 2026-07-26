@@ -89,7 +89,7 @@ export default function LobbyPage() {
       const saved = localStorage.getItem(`custom_avatar_${userId}`);
       setCustomAvatar(saved || getBlankWhiteAvatar());
       const savedTank = localStorage.getItem(`selected_tank_${userId}`) as TankId | null;
-      if (savedTank === "chrome" || savedTank === "shotgun" || savedTank === "forest") setSelectedTankId(savedTank);
+      if (savedTank === "chrome" || savedTank === "shotgun" || savedTank === "forest" || savedTank === "bolt") setSelectedTankId(savedTank);
       
       const w = parseInt(localStorage.getItem(`user_wins_${userId}`) || "0", 10);
       const l = parseInt(localStorage.getItem(`user_losses_${userId}`) || "0", 10);

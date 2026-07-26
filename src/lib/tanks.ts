@@ -2,9 +2,10 @@
 export type WeaponId =
   | "heavy" | "sniper" | "cluster"
   | "buckshot" | "incendiary" | "mine"
-  | "vine" | "tree" | "flower";
+  | "vine" | "tree" | "flower"
+  | "emp" | "minigun" | "railgun";
 
-export type GroundEffect = "mine" | "vine" | "tree";
+export type GroundEffect = "mine" | "vine" | "tree" | "emp";
 
 export interface WeaponDef {
   label: string;
@@ -18,6 +19,9 @@ export interface WeaponDef {
   incendiary?: boolean;   // 적중시 화상(도트뎀) 부여
   groundEffect?: GroundEffect; // 착탄시 폭발 대신 설치되는 효과물
   flowerEffect?: boolean; // 적중시 상대(피격자)의 조준 각도를 랜덤하게 흐트러뜨림
+  isEmp?: boolean;       // EMP 폭발 효과
+  isMinigun?: boolean;   // 미니건 연사 효과
+  isRailgun?: boolean;   // 레일건 조준/지속 타격 효과
 }
 
 export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
@@ -30,9 +34,12 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   vine: { label: "덩쿨탄 🌿", color: "#65a30d", radius: 16, maxDmg: 2, splitCount: 5, splitDamage: 2, splitDelay: 2, spreadFactor: 1.05, groundEffect: "vine" },
   tree: { label: "세계수 🌳", color: "#16a34a", radius: 34, maxDmg: 20, groundEffect: "tree" },
   flower: { label: "플라워탄 🌸", color: "#f472b6", radius: 24, maxDmg: 12, flowerEffect: true },
+  emp: { label: "EMP탄 ⚡", color: "#facc15", radius: 32, maxDmg: 15, isEmp: true, groundEffect: "emp" },
+  minigun: { label: "미니건 🔫", color: "#cbd5e1", radius: 6, maxDmg: 1, isMinigun: true },
+  railgun: { label: "레일건 🔮", color: "#38bdf8", radius: 12, maxDmg: 10, isRailgun: true },
 };
 
-export type TankId = "chrome" | "shotgun" | "forest";
+export type TankId = "chrome" | "shotgun" | "forest" | "bolt";
 
 export interface TankConfig {
   id: TankId;
@@ -76,7 +83,17 @@ export const TANKS: Record<TankId, TankConfig> = {
     weapons: ["vine", "tree", "flower"],
     description: "숲의 힘을 다루는 탱크. 직접적인 화력보다는 덩쿨, 나무, 꽃가루로 전장의 지형과 상대의 움직임/조준을 교란시킵니다.",
   },
+  bolt: {
+    id: "bolt",
+    name: "볼트 (Bolt)",
+    tag: "전자기 제어형 탱크",
+    bodyColor: "#ffffff",
+    maxHp: 110,
+    maxFuel: 110,
+    weapons: ["emp", "minigun", "railgun"],
+    description: "순백의 바디를 가진 첨단 전자기 탱크. EMP 수류탄으로 이동을 방해하고, 20연사 미니건과 일직선 감응형 레일건으로 압도적 화력을 퍼붓습니다.",
+  },
 };
 
 export const DEFAULT_TANK_ID: TankId = "chrome";
-export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest"];
+export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt"];
