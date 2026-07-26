@@ -1048,8 +1048,9 @@ export function GameCanvas({
     return () => cancelAnimationFrame(raf);
   }, [socket, roomName, myProfile, opponentProfile, initialSeed, onGameEnded]);
 
-  // ── Mouse & Touch Aiming (마우스 누르고 있는 동안/터치 드래그로 조종) ──────────────────
+  // ── Mouse & Touch Aiming (마우스 누르고 있는 동안/터치 드래그/클릭으로 조종) ──────────────────
   const isPointerDownRef = useRef(false);
+  const pointerStartPosRef = useRef({ x: 0, y: 0 });
 
   const updateAiming = (clientX: number, clientY: number) => {
     const g = G.current;
@@ -1068,23 +1069,6 @@ export function GameCanvas({
     setUiAngle(ang); setUiPower(pwr);
   };
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    isPointerDownRef.current = true;
-    updateAiming(e.clientX, e.clientY);
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (isPointerDownRef.current) {
-      updateAiming(e.clientX, e.clientY);
-    } else {
-      updateAiming(e.clientX, e.clientY);
-    }
-  };
-
-  const handlePointerUp = () => {
-    isPointerDownRef.current = false;
-  };
-
   const handleFireBtn = () => {
     const g = G.current;
     if (!g.isMyTurn || g.projectiles.length > 0 || g.firedThisTurn || g.gameOver) return;
@@ -1094,6 +1078,35 @@ export function GameCanvas({
       roomName,
       action: { type: "fire", x: g.myX, y: g.myY, angle: g.angle, power: g.power, weapon: g.weapon },
     });
+  };
+
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    isPointerDownRef.current = true;
+    pointerStartPosRef.current = { x: e.clientX, y: e.clientY };
+    updateAiming(e.clientX, e.clientY);
+  };
+
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    updateAiming(e.clientX, e.clientY);
+  };
+
+  const handleCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    isPointerDownRef.current = false;
+    // 마우스 클릭 시 즉시 조준 반영 후 발사
+    updateAiming(e.clientX, e.clientY);
+    handleFireBtn();
+  };
+
+  const handleCanvasTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (e.touches.length > 0) {
+      updateAiming(e.touches[0].clientX, e.touches[0].clientY);
+    }
+  };
+
+  const handleCanvasTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    if (e.touches.length > 0) {
+      updateAiming(e.touches[0].clientX, e.touches[0].clientY);
+    }
   };
 
   const cycleWeapon = () => {
@@ -1120,12 +1133,6 @@ export function GameCanvas({
   };
 
   const weaponDef = WEAPON_DEFS[uiWeapon];
-
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // 캔버스 클릭 시 조준 업데이트 후 즉시 발사 (PC & 모바일 지원)
-    updateAiming(e.clientX, e.clientY);
-    handleFireBtn();
-  };
 
   return (
     <div style={styles.wrapper}>
@@ -1180,11 +1187,11 @@ export function GameCanvas({
           width={CANVAS_W}
           height={CANVAS_H}
           style={styles.canvas}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-          onClick={handleCanvasClick}
+          onMouseDown={handleCanvasMouseDown}
+          onMouseMove={handleCanvasMouseMove}
+          onMouseUp={handleCanvasMouseUp}
+          onTouchStart={handleCanvasTouchStart}
+          onTouchMove={handleCanvasTouchMove}
           onWheel={handleWheel}
         />
       </div>
