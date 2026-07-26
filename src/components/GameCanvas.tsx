@@ -1121,6 +1121,14 @@ export function GameCanvas({
 
   const weaponDef = WEAPON_DEFS[uiWeapon];
 
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    // 마우스로 캔버스 클릭 시 즉시 발사 (PC 환경 조작)
+    if (e.pointerType === "mouse") {
+      updateAiming(e.clientX, e.clientY);
+      handleFireBtn();
+    }
+  };
+
   return (
     <div style={styles.wrapper}>
       {/* HUD Top */}
@@ -1178,6 +1186,7 @@ export function GameCanvas({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
+          onClick={handleCanvasClick}
           onWheel={handleWheel}
         />
       </div>
