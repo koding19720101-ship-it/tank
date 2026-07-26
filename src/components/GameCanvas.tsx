@@ -132,6 +132,13 @@ export function GameCanvas({
     turnTimer: 20,
     firedThisTurn: false,
     railgunLastDmgTime: 0,  // 레일건 지속 데미지 타이머
+    minigunQueue: [] as Array<{
+      remaining: number;
+      sx: number; sy: number;
+      ang: number; pwr: number;
+      owner: "me" | "opp";
+      lastSpawn: number;
+    }>,
   });
 
   // React UI state (only for display)
@@ -288,18 +295,12 @@ export function GameCanvas({
     const g = G.current;
 
     if (def.isMinigun) {
-      // 미니건: 20발 연사, 중력 없이 일직선에 가깝게 고속으로 발사
-      const bulletSpd = 14;
-      for (let i = 0; i < 20; i++) {
-        const jitter = (Math.random() - 0.5) * 0.05;
-        g.projectiles.push({
-          id: Math.random().toString(36).slice(2),
-          x: sx, y: sy - 12,
-          vx: Math.cos(angRad + jitter) * (bulletSpd + Math.random()),
-          vy: -Math.sin(angRad + jitter) * (bulletSpd + Math.random()) + i * 0.04,
-          type: wep, owner, isMinigunBullet: true,
-        });
-      }
+      // 미니건: 20발을 40ms 간격으로 연속발사 (burst)
+      g.minigunQueue.push({
+        remaining: 20,
+        sx, sy, ang, pwr, owner,
+        lastSpawn: 0,
+      });
       return;
     }
 
@@ -691,8 +692,33 @@ export function GameCanvas({
       }
       toRemove.forEach(i => g.projectiles.splice(i, 1));
 
-      // When all projectiles land → end turn
-      if (g.projectiles.length === 0 && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
+      // ─ Minigun 연속 발사 (burst) 큐 처리 ─
+      if (g.minigunQueue.length > 0) {
+        const nowM = Date.now();
+        for (let q = g.minigunQueue.length - 1; q >= 0; q--) {
+          const item = g.minigunQueue[q];
+          if (nowM - item.lastSpawn >= 45) { // 45ms 간격으로 1발씩 연사
+            item.lastSpawn = nowM;
+            item.remaining--;
+            const angRad = (item.ang * Math.PI) / 180;
+            const bulletSpd = 15;
+            const jitter = (Math.random() - 0.5) * 0.04;
+            g.projectiles.push({
+              id: Math.random().toString(36).slice(2),
+              x: item.sx, y: item.sy - 12,
+              vx: Math.cos(angRad + jitter) * (bulletSpd + Math.random()),
+              vy: -Math.sin(angRad + jitter) * (bulletSpd + Math.random()),
+              type: "minigun", owner: item.owner, isMinigunBullet: true,
+            });
+            if (item.remaining <= 0) {
+              g.minigunQueue.splice(q, 1);
+            }
+          }
+        }
+      }
+
+      // When all projectiles land & minigun burst ends → end turn
+      if (g.projectiles.length === 0 && g.minigunQueue.length === 0 && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
         g.turnEndEmitted = true;
         socket.emit("game-turn-end", { roomName });
       }
