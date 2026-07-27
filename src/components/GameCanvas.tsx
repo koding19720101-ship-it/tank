@@ -641,15 +641,31 @@ export function GameCanvas({
           if (p.splitTimer <= 0) {
             p.isSplit = true;
             const count = def.splitCount;
-            const spread = def.spreadFactor ?? 1.7;
-            for (let j = 0; j < count; j++) {
-              const offset = j - (count - 1) / 2;
-              g.projectiles.push({
-                id: Math.random().toString(36).slice(2),
-                x: p.x, y: p.y,
-                vx: p.vx + offset * spread, vy: p.vy - 1,
-                type: p.type, isSplit: true, owner: p.owner,
-              });
+            if (def.splitAngleDeg !== undefined) {
+              const totalRad = (def.splitAngleDeg * Math.PI) / 180;
+              const baseAngle = Math.atan2(p.vy, p.vx);
+              const speed = Math.hypot(p.vx, p.vy);
+              for (let j = 0; j < count; j++) {
+                const t = count > 1 ? j / (count - 1) - 0.5 : 0;
+                const ang = baseAngle + t * totalRad;
+                g.projectiles.push({
+                  id: Math.random().toString(36).slice(2),
+                  x: p.x, y: p.y,
+                  vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+                  type: p.type, isSplit: true, owner: p.owner,
+                });
+              }
+            } else {
+              const spread = def.spreadFactor ?? 1.7;
+              for (let j = 0; j < count; j++) {
+                const offset = j - (count - 1) / 2;
+                g.projectiles.push({
+                  id: Math.random().toString(36).slice(2),
+                  x: p.x, y: p.y,
+                  vx: p.vx + offset * spread, vy: p.vy - 1,
+                  type: p.type, isSplit: true, owner: p.owner,
+                });
+              }
             }
             spawnParticles(p.x, p.y, 8, 2);
             toRemove.push(i);
