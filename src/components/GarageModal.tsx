@@ -172,6 +172,12 @@ export function GarageModal({ onClose, currentTankId, onSelectTank, tankStats }:
                           ? "씨앗 5발 · 이속 15% 감소(중첩)"
                           : wid === "tree"
                           ? "튕겨나감 · 시간 경과 후 지형화"
+                          : wid === "moveshot"
+                          ? `적중시 ${w.maxDmg}뎀 · 반동 자해 ${w.selfDamage}뎀`
+                          : wid === "bouncyball"
+                          ? `개당 ${w.splitDamage}뎀 · 최대 ${w.maxBounces}회 튕김`
+                          : wid === "trickshot"
+                          ? `데미지 ${w.maxDmg} · 적 감지시 급강하`
                           : w.splitCount
                           ? `분열 ${w.splitCount}갈래 · 개당 ${w.splitDamage}뎀`
                           : `데미지 ${w.maxDmg}`}

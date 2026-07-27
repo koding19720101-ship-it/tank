@@ -2,6 +2,7 @@ const { Server } = require("socket.io");
 const http = require("http");
 
 const PORT = process.env.PORT || 3001;
+const WORLD_W = 2400;
 
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
@@ -9,168 +10,103 @@ const server = http.createServer((req, res) => {
 });
 
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-  },
+  cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-// Connected clients: socketId -> playerProfile
-const connectedClients = new Map();
+const connectedClients = new Map(); // socketId -> profile
 
-// Mode-based queues: mode -> Array of { socketId, profile }
-const queues = {
-  "1v1": [],
-  "2v2": [],
-  "3v3": [],
-};
+// Mode queues: "1v1" | "2v2" | "3v3" -> [{ socketId, profile }]
+const queues = { "1v1": [], "2v2": [], "3v3": [] };
+const MODE_SIZE = { "1v1": 1, "2v2": 2, "3v3": 3 };
 
-// Players required per mode (total = both teams)
-const MODE_SIZE = { "1v1": 2, "2v2": 4, "3v3": 6 };
-
-// Active game rooms
-// roomName -> { players: [{ socketId, team, slotIndex, x, hp }], turnOrder: [socketId,...], turnIndex, started, mode }
+// Active rooms: roomName -> {
+//   sockets: [socketId...], joined: [socketId...], teamOf: {socketId:"red"|"blue"},
+//   profileOf: {socketId:profile}, turnOrder: [socketId...], turnIndex, mode,
+//   deadSet: Set<socketId>, started
+// }
 const gameRooms = new Map();
-
-// World width used for spawn X calculations
-const WORLD_W = 2400;
 
 io.on("connection", (socket) => {
   console.log(`Client connected: ${socket.id}`);
   connectedClients.set(socket.id, null);
 
-  const broadcastStats = () => {
-    io.emit("online-stats", { onlineCount: connectedClients.size });
-  };
+  const broadcastStats = () => io.emit("online-stats", { onlineCount: connectedClients.size });
   broadcastStats();
 
-  // join-queue: { playerProfile, mode }
   socket.on("join-queue", ({ profile, mode }) => {
-    const validMode = MODE_SIZE[mode] ? mode : "1v1";
-    console.log(`[queue] ${profile.name} (${socket.id}) joining ${validMode} queue`);
+    const m = MODE_SIZE[mode] ? mode : "1v1";
+    console.log(`Player ${profile.name} (${socket.id}) joined ${m} queue`);
     connectedClients.set(socket.id, profile);
-
-    // Remove from any existing queue first
-    for (const m of Object.keys(queues)) {
-      queues[m] = queues[m].filter(p => p.socketId !== socket.id);
-    }
-
-    queues[validMode].push({ socketId: socket.id, profile, mode: validMode });
-    matchPlayers(validMode);
+    const q = queues[m];
+    if (!q.some(p => p.socketId === socket.id)) q.push({ socketId: socket.id, profile });
+    matchQueue(m);
   });
 
   socket.on("leave-queue", () => {
+    console.log(`Player (${socket.id}) left the matchmaking queue`);
     for (const m of Object.keys(queues)) {
       queues[m] = queues[m].filter(p => p.socketId !== socket.id);
     }
     socket.emit("queue-left");
   });
 
-  // join-game-room: { roomName, profile }
   socket.on("join-game-room", ({ roomName, profile }) => {
     socket.join(roomName);
     connectedClients.set(socket.id, profile);
 
-    if (!gameRooms.has(roomName)) return;
     const room = gameRooms.get(roomName);
+    if (!room) return;
+    room.profileOf[socket.id] = profile;
+    if (!room.joined.includes(socket.id)) room.joined.push(socket.id);
 
-    // Update profile for this socket
-    const playerSlot = room.players.find(p => p.socketId === socket.id);
-    if (playerSlot) playerSlot.profile = profile;
+    console.log(`Socket ${socket.id} joined game room ${roomName} (${room.joined.length}/${room.sockets.length})`);
 
-    room.joinedCount = (room.joinedCount || 0) + 1;
-    console.log(`[room] ${socket.id} joined ${roomName} (${room.joinedCount}/${MODE_SIZE[room.mode]})`);
-
-    if (room.joinedCount >= MODE_SIZE[room.mode] && !room.started) {
+    if (room.joined.length === room.sockets.length && !room.started) {
       room.started = true;
       const seed = Math.random() * 1000;
+      const size = MODE_SIZE[room.mode];
 
-      // Build players array with full profile info
-      const playersForClient = room.players.map(p => ({
-        socketId: p.socketId,
-        team: p.team,
-        slotIndex: p.slotIndex,
-        x: p.x,
-        hp: 100,
-        profile: p.profile,
-      }));
+      const redIds = room.sockets.filter(sid => room.teamOf[sid] === "red");
+      const blueIds = room.sockets.filter(sid => room.teamOf[sid] === "blue");
+      const redXs = spreadXs(size, "red");
+      const blueXs = spreadXs(size, "blue");
 
-      console.log(`[room] Game starting in ${roomName}. Turn order: ${room.turnOrder.join(", ")}`);
+      const players = [
+        ...redIds.map((sid, i) => ({ socketId: sid, team: "red", slotIndex: i, x: redXs[i], hp: 100, profile: room.profileOf[sid] })),
+        ...blueIds.map((sid, i) => ({ socketId: sid, team: "blue", slotIndex: i, x: blueXs[i], hp: 100, profile: room.profileOf[sid] })),
+      ];
+
       io.to(roomName).emit("game-start", {
-        players: playersForClient,
-        turnOrder: room.turnOrder,
-        activeSocketId: room.turnOrder[0],
-        seed,
-        mode: room.mode,
+        players, turnOrder: room.turnOrder, activeSocketId: room.turnOrder[0], seed, mode: room.mode,
       });
+      console.log(`Game starting in room ${roomName} (${room.mode})`);
     }
   });
 
-  // game-action: relay to all others in room
+  // Relay in-game actions (move / fire) — action already carries socketId
   socket.on("game-action", ({ roomName, action }) => {
     socket.to(roomName).emit("game-action", action);
   });
 
-  // game-turn-end: advance turn order
+  // Advance turn order, skipping players already reported dead
   socket.on("game-turn-end", ({ roomName }) => {
     const room = gameRooms.get(roomName);
-    if (!room || !room.started) return;
-
-    room.turnIndex = (room.turnIndex + 1) % room.turnOrder.length;
-    // Skip dead players
-    let attempts = 0;
-    while (room.deadSockets && room.deadSockets.has(room.turnOrder[room.turnIndex]) && attempts < room.turnOrder.length) {
-      room.turnIndex = (room.turnIndex + 1) % room.turnOrder.length;
-      attempts++;
+    if (!room || room.turnOrder.length === 0) return;
+    let next = room.turnIndex;
+    for (let i = 0; i < room.turnOrder.length; i++) {
+      next = (next + 1) % room.turnOrder.length;
+      if (!room.deadSet.has(room.turnOrder[next])) break;
     }
-
-    const nextActiveSocketId = room.turnOrder[room.turnIndex];
-    io.to(roomName).emit("game-new-turn", { activeSocketId: nextActiveSocketId });
+    room.turnIndex = next;
+    io.to(roomName).emit("game-new-turn", { activeSocketId: room.turnOrder[next] });
   });
 
-  // report-player-dead: mark a player as dead
+  // A client reports a tank has died (any client may detect this identically;
+  // dedupe by deadSet so it's only processed once per player)
   socket.on("report-player-dead", ({ roomName, deadSocketId }) => {
     const room = gameRooms.get(roomName);
     if (!room) return;
-    if (!room.deadSockets) room.deadSockets = new Set();
-    room.deadSockets.add(deadSocketId);
-
-    // Check if a team is fully dead
-    const deadTeams = new Set();
-    for (const p of room.players) {
-      if (room.deadSockets.has(p.socketId)) deadTeams.add(p.team);
-    }
-    const teamCounts = {};
-    for (const p of room.players) {
-      teamCounts[p.team] = (teamCounts[p.team] || 0) + 1;
-    }
-
-    for (const [team, count] of Object.entries(teamCounts)) {
-      const deadCount = room.players.filter(p => p.team === team && room.deadSockets.has(p.socketId)).length;
-      if (deadCount >= count) {
-        // This team is fully dead — the other team wins
-        const winningTeam = Object.keys(teamCounts).find(t => t !== team);
-        room.players.forEach(p => {
-          const outcome = p.team === winningTeam ? "victory" : "defeat";
-          io.to(p.socketId).emit("game-ended", { reason: outcome });
-        });
-        gameRooms.delete(roomName);
-        return;
-      }
-    }
-  });
-
-  // report-game-end (legacy fallback / 1v1 compat)
-  socket.on("report-game-end", ({ roomName, reason }) => {
-    const room = gameRooms.get(roomName);
-    if (!room) return;
-    room.players.forEach(p => {
-      const outcome = p.socketId === socket.id
-        ? reason
-        : reason === "victory" ? "defeat" : reason === "defeat" ? "victory" : reason;
-      io.to(p.socketId).emit("game-ended", { reason: outcome });
-    });
-    gameRooms.delete(roomName);
+    checkAndHandleDeath(roomName, room, deadSocketId);
   });
 
   socket.on("disconnect", () => {
@@ -181,14 +117,8 @@ io.on("connection", (socket) => {
     }
 
     for (const [roomName, room] of gameRooms.entries()) {
-      const inRoom = room.players.some(p => p.socketId === socket.id);
-      if (inRoom) {
-        room.players.forEach(p => {
-          if (p.socketId !== socket.id) {
-            io.to(p.socketId).emit("game-ended", { reason: "opponent_left" });
-          }
-        });
-        gameRooms.delete(roomName);
+      if (room.sockets.includes(socket.id)) {
+        checkAndHandleDeath(roomName, room, socket.id);
       }
     }
 
@@ -196,69 +126,78 @@ io.on("connection", (socket) => {
   });
 });
 
-// Matchmaker algorithm
-function matchPlayers(mode) {
-  const needed = MODE_SIZE[mode];
-  while (queues[mode].length >= needed) {
-    const group = queues[mode].splice(0, needed);
+// Spread starting x positions for a team of `size` tanks across the 2400px world.
+// Red starts near the left edge, blue near the right edge.
+function spreadXs(size, team) {
+  const spacing = 250;
+  const base = team === "red" ? 200 : WORLD_W - 200;
+  const dir = team === "red" ? 1 : -1;
+  return Array.from({ length: size }, (_, i) => base + dir * i * spacing);
+}
+
+// Mark a player dead (idempotent) and, if that eliminates a whole team,
+// broadcast game-ended to everyone in the room and tear it down.
+function checkAndHandleDeath(roomName, room, deadSocketId) {
+  if (room.deadSet.has(deadSocketId)) return;
+  room.deadSet.add(deadSocketId);
+
+  const aliveOnTeam = (team) =>
+    room.sockets.filter(sid => room.teamOf[sid] === team && !room.deadSet.has(sid)).length;
+
+  const redAlive = aliveOnTeam("red");
+  const blueAlive = aliveOnTeam("blue");
+
+  if (redAlive === 0 || blueAlive === 0) {
+    const losingTeam = redAlive === 0 ? "red" : "blue";
+    room.sockets.forEach((sid) => {
+      const outcome = room.teamOf[sid] === losingTeam ? "defeat" : "victory";
+      io.to(sid).emit("game-ended", { reason: outcome });
+    });
+    gameRooms.delete(roomName);
+  }
+}
+
+// Try to form a match for a given mode ("1v1" | "2v2" | "3v3")
+function matchQueue(mode) {
+  const size = MODE_SIZE[mode];
+  const need = size * 2;
+  const q = queues[mode];
+
+  while (q.length >= need) {
+    const picked = q.splice(0, need);
+    const redTeam = picked.slice(0, size);
+    const blueTeam = picked.slice(size);
 
     const roomName = `room-${Math.random().toString(36).substring(2, 11)}`;
-    const perTeam = needed / 2; // 1, 2, or 3
+    const teamOf = {};
+    redTeam.forEach(p => { teamOf[p.socketId] = "red"; });
+    blueTeam.forEach(p => { teamOf[p.socketId] = "blue"; });
 
-    // Assign teams and spawn X positions
-    // Red team: left side, Blue team: right side
-    // Spread within each half of the 2400px world
-    const players = group.map((entry, i) => {
-      const team = i < perTeam ? "red" : "blue";
-      const slotIndex = i < perTeam ? i : i - perTeam;
-      let x;
-      if (team === "red") {
-        // Spread from 150 to 150 + (perTeam-1)*200
-        x = 150 + slotIndex * 200;
-      } else {
-        // Spread from (WORLD_W-150) back to (WORLD_W-150) - (perTeam-1)*200
-        x = (WORLD_W - 150) - slotIndex * 200;
-      }
-      return { socketId: entry.socketId, profile: entry.profile, team, slotIndex, x };
-    });
-
-    // Turn order: interleave Red1, Blue1, Red2, Blue2, ...
-    const redPlayers = players.filter(p => p.team === "red");
-    const bluePlayers = players.filter(p => p.team === "blue");
+    // Turn order interleaved: red0, blue0, red1, blue1, ...
     const turnOrder = [];
-    for (let i = 0; i < perTeam; i++) {
-      if (redPlayers[i]) turnOrder.push(redPlayers[i].socketId);
-      if (bluePlayers[i]) turnOrder.push(bluePlayers[i].socketId);
+    for (let i = 0; i < size; i++) {
+      turnOrder.push(redTeam[i].socketId);
+      turnOrder.push(blueTeam[i].socketId);
     }
 
+    const sockets = [...redTeam, ...blueTeam].map(p => p.socketId);
+
     gameRooms.set(roomName, {
-      players,
-      turnOrder,
-      turnIndex: 0,
-      started: false,
-      joinedCount: 0,
-      mode,
-      deadSockets: new Set(),
+      sockets, joined: [], teamOf, profileOf: {}, turnOrder, turnIndex: 0,
+      mode, deadSet: new Set(), started: false,
     });
 
-    const names = group.map(e => e.profile.name).join(", ");
-    console.log(`[match] Room ${roomName} (${mode}): ${names}`);
+    console.log(`Match found! Room: ${roomName} (${mode})`);
 
-    // Notify each player with their team info and all teammates/opponents
-    players.forEach((p) => {
-      const teammates = players.filter(other => other.team === p.team && other.socketId !== p.socketId).map(o => o.profile);
-      const opponents = players.filter(other => other.team !== p.team).map(o => o.profile);
-      io.to(p.socketId).emit("match-found", {
-        roomName,
-        team: p.team,
-        teammates,
-        opponents,
-        mode,
-      });
+    sockets.forEach((sid) => {
+      const myTeam = teamOf[sid];
+      const teammates = picked.filter(p => p.socketId !== sid && teamOf[p.socketId] === myTeam).map(p => p.profile);
+      const opponents = picked.filter(p => teamOf[p.socketId] !== myTeam).map(p => p.profile);
+      io.to(sid).emit("match-found", { roomName, team: myTeam, teammates, opponents, mode });
     });
   }
 }
 
 server.listen(PORT, () => {
-  console.log(`WebSocket Matchmaker Server listening on port ${PORT}`);
+  console.log(`WebSocket Matchmaker Server is listening on port ${PORT}`);
 });
