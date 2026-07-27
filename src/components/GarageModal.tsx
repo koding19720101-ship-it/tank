@@ -182,6 +182,12 @@ export function GarageModal({ onClose, currentTankId, onSelectTank, tankStats }:
                           ? `개당 ${w.splitDamage}뎀 · 최대 ${w.maxBounces}회 튕김`
                           : wid === "trickshot"
                           ? `데미지 ${w.maxDmg} · 적 감지시 급강하`
+                          : wid === "flamethrower"
+                          ? `데미지 ${w.maxDmg} · 즉발 화염 · 화상 부여`
+                          : wid === "volcano"
+                          ? `개당 ${w.splitDamage}뎀 · 화상(장시간)`
+                          : wid === "hellfire"
+                          ? `데미지 ${w.maxDmg} · 지연 폭발 · 광역 화상`
                           : w.splitCount
                           ? `분열 ${w.splitCount}갈래 · 개당 ${w.splitDamage}뎀`
                           : `데미지 ${w.maxDmg}`}
@@ -235,6 +241,9 @@ function weaponDesc(wid: string): string {
     case "moveshot": return "포를 쏘는 대신 자신의 몸이 직접 포탄처럼 날아갑니다. 착지하며 폭발해 주변 적에게 20 피해를 주지만, 적을 맞췄을 경우 반동으로 자신도 7 피해를 입습니다.";
     case "bouncyball": return "분홍색 탄 5발을 발사합니다. 지형에 닿을 때마다 약하게 터지며 개당 5 피해를 주고, 최대 5번까지 튕겨다니다 마지막에 완전히 소멸합니다.";
     case "trickshot": return "일직선으로 곧게 날아가다가 진행 경로 아래에 상대 탱크가 감지되면 그 지점에서 90도로 급강하해 착탄과 동시에 폭발합니다.";
+    case "flamethrower": return "전방을 향해 즉시 화염을 내뿜는 근거리 무기입니다. 닿은 대상에게 피해를 주며 불을 붙입니다. 세계수의 나무나 덩쿨탄의 덩쿨도 태워 없앨 수 있습니다.";
+    case "volcano": return "불타는 덩어리 5발을 흩뿌립니다. 적중한 대상은 일반 소이탄보다 오랫동안 불이 붙어 지속 피해를 입습니다. 나무나 덩쿨도 태워 없앨 수 있습니다.";
+    case "hellfire": return "회색의 길쭉한 탄입니다. 지형에 꽂히면 즉시 터지지 않고 점점 붉게 달아오르다가 잠시 후 넓은 범위에 큰 폭발을 일으키며 불을 붙입니다. 나무나 덩쿨도 태워 없앨 수 있습니다.";
     default: return "";
   }
 }

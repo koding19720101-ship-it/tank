@@ -55,6 +55,8 @@ interface Projectile {
   bounces?: number;    // 탱탱볼: 남은 튕김 횟수
   tsAge?: number;      // 트릭샷: 경과 프레임
   tsFalling?: boolean; // 트릭샷: 급강하 전환 여부
+  embedded?: boolean;  // 지옥의 불: 착탄 후 지형에 박혀 폭발 대기 중
+  fuseAge?: number;    // 지옥의 불: 박힌 후 경과 프레임
 }
 
 interface Hazard {
@@ -390,6 +392,11 @@ export function GameCanvas({
       return;
     }
 
+    if (def.isFlamethrower) {
+      fireFlamethrower(ownerSocketId, sx, sy, ang);
+      return;
+    }
+
     if (def.isRailgun) {
       const railSpd = 20;
       let tx = sx, ty = sy - 12;
@@ -423,12 +430,25 @@ export function GameCanvas({
     g.projectiles.push(proj);
   };
 
-  const igniteTank = (socketId: string) => {
+  const igniteTank = (socketId: string, ticks?: number) => {
     const g = G.current;
     const tank = g.tanks.find(t => t.socketId === socketId);
     if (!tank) return;
-    if (!tank.burn) tank.burn = { ticksLeft: BURN_TICKS, lastTick: Date.now() };
-    else tank.burn.ticksLeft = BURN_TICKS;
+    const dur = ticks ?? BURN_TICKS;
+    if (!tank.burn) tank.burn = { ticksLeft: dur, lastTick: Date.now() };
+    else tank.burn.ticksLeft = Math.max(tank.burn.ticksLeft, dur);
+  };
+
+  // 세계수(나무)/덩쿨탄 지형지물을 반경 내에서 태워 없앰 (인페르노 전용 상호작용)
+  const burnNearbyHazards = (ex: number, ey: number, radius: number) => {
+    const g = G.current;
+    g.hazards = g.hazards.filter(h => {
+      if ((h.kind === "vine" || h.kind === "tree") && Math.hypot(h.x - ex, h.y - ey) < radius) {
+        spawnParticles(h.x, h.y, 10, 2, ["#f97316", "#fde047", "#7c2d12"]);
+        return false;
+      }
+      return true;
+    });
   };
 
   const applyHpDamage = (socketId: string, dmg: number) => {
@@ -478,6 +498,7 @@ export function GameCanvas({
 
     destructTerrain(ex, ey, destructRadius);
     spawnParticles(ex, ey, particleCount, 4, palette);
+    if (def.burnsHazards) burnNearbyHazards(ex, ey, radius);
 
     g.tanks.forEach(tank => {
       if (tank.dead) return;
@@ -485,7 +506,7 @@ export function GameCanvas({
       if (dist < radius) {
         const dmg = Math.round(maxDmg * (1 - dist / radius));
         applyHpDamage(tank.socketId, dmg);
-        if (def.incendiary) igniteTank(tank.socketId);
+        if (def.incendiary) igniteTank(tank.socketId, def.burnTicks);
         if (def.flowerEffect && tank.socketId === mySocketId) {
           const delta = Math.random() * 34 - 17;
           const newAngle = Math.max(0, Math.min(180, Math.round(G.current.angle + delta)));
@@ -533,6 +554,42 @@ export function GameCanvas({
       }
     });
     if (hitEnemy) applyHpDamage(socketId, def.selfDamage ?? 7);
+  };
+
+  // ── 화염방사기: 전방 원뿔형으로 즉시 화염을 내뿜음 ─────────────────────────
+  const fireFlamethrower = (ownerSocketId: string, sx: number, sy: number, ang: number) => {
+    const g = G.current;
+    const def = WEAPON_DEFS.flamethrower;
+    const angRad = (ang * Math.PI) / 180;
+    const range = def.flameRange ?? 130;
+    const dirX = Math.cos(angRad), dirY = -Math.sin(angRad);
+    const sx0 = sx, sy0 = sy - 12;
+
+    // 화염 파티클 (시각효과)
+    for (let k = 0; k < 20; k++) {
+      const t = k / 19;
+      const spread = (Math.random() - 0.5) * 16 * t;
+      const px = sx0 + dirX * range * t + -dirY * spread;
+      const py = sy0 + dirY * range * t + dirX * spread;
+      g.particles.push({ x: px, y: py, vx: dirX * 1.2, vy: dirY * 1.2, color: Math.random() < 0.5 ? "#fb923c" : "#fde047", radius: Math.random() * 3 + 1.5, life: 0, maxLife: 16 });
+    }
+
+    g.tanks.forEach(tank => {
+      if (tank.dead || tank.socketId === ownerSocketId) return;
+      const t = Math.max(0, Math.min(1, ((tank.x - sx0) * dirX + (tank.y - sy0) * dirY) / range));
+      const cx = sx0 + dirX * range * t;
+      const cy = sy0 + dirY * range * t;
+      const dist = Math.hypot(tank.x - cx, tank.y - cy);
+      if (t > 0 && dist < 20) {
+        const dmg = Math.round(def.maxDmg * (1 - dist / 20));
+        applyHpDamage(tank.socketId, dmg);
+        igniteTank(tank.socketId, def.burnTicks);
+      }
+    });
+
+    if (def.burnsHazards) {
+      burnNearbyHazards(sx0 + dirX * range * 0.5, sy0 + dirY * range * 0.5, range * 0.65);
+    }
   };
 
   // ── Main Canvas Loop ─────────────────────────────────────────────────────
@@ -709,6 +766,18 @@ export function GameCanvas({
         const p = g.projectiles[i];
         const def = WEAPON_DEFS[p.type];
 
+        if (p.embedded) {
+          // 지옥의 불: 지형에 박힌 채 점점 붉어지다가 퓨즈가 다 되면 폭발
+          p.fuseAge = (p.fuseAge ?? 0) + 1;
+          if (p.fuseAge >= (def.fuseFrames ?? 60)) {
+            handleExplosion(p);
+            toRemove.push(i);
+          } else if (p.fuseAge % 8 === 0) {
+            spawnParticles(p.x, p.y - 2, 2, 1, ["#78716c", "#f97316", "#dc2626"]);
+          }
+          continue;
+        }
+
         if (def.isRailgun) {
           p.railgunAge = (p.railgunAge ?? 0) + 1;
           if (p.railgunPhase === "beam" && p.railgunAge >= RAILGUN_BEAM_FRAMES) {
@@ -811,7 +880,17 @@ export function GameCanvas({
         }
 
         if (outOfBounds || hitTerrain) {
-          if (def.bouncy && hitTerrain && (p.bounces ?? def.maxBounces ?? 0) > 0) {
+          if (def.hellfire) {
+            // 지옥의 불: 지형에 닿으면 즉시 터지지 않고 박혀서 점점 붉어지다가 지연 폭발
+            if (hitTerrain) {
+              p.embedded = true;
+              p.vx = 0; p.vy = 0;
+              p.fuseAge = 0;
+              spawnParticles(p.x, p.y, 8, 2, ["#78716c", "#a8a29e", "#44403c"]);
+            } else {
+              toRemove.push(i);
+            }
+          } else if (def.bouncy && hitTerrain && (p.bounces ?? def.maxBounces ?? 0) > 0) {
             // 탱탱볼: 닿을시 약간 터지고(개당 데미지) 튕겨나감 — 아직 튕길 횟수가 남음
             explodeAt(p.x, p.y, p.type, true);
             p.vy = -Math.abs(p.vy) * 0.55;
@@ -1114,6 +1193,24 @@ export function GameCanvas({
           ctx.shadowColor = "#38bdf8"; ctx.shadowBlur = 3;
           ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.4, p.y - p.vy * 0.4);
           ctx.stroke(); ctx.shadowBlur = 0; ctx.restore();
+          return;
+        }
+        if (def.hellfire) {
+          // 회색 길쭉한 탄. 박힌 뒤에는 퓨즈 진행도에 따라 점점 붉어짐
+          const fuseFrac = p.embedded ? Math.min(1, (p.fuseAge ?? 0) / (def.fuseFrames ?? 60)) : 0;
+          const r = Math.round(120 + fuseFrac * 135); // 78 -> ~220
+          const g2 = Math.round(113 - fuseFrac * 90);
+          const b2 = Math.round(108 - fuseFrac * 90);
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          const ang2 = p.embedded ? 0 : Math.atan2(p.vy, p.vx);
+          ctx.rotate(ang2);
+          ctx.fillStyle = `rgb(${r},${g2},${b2})`;
+          ctx.beginPath(); ctx.roundRect(-9, -2.5, 18, 5, 2.5); ctx.fill();
+          ctx.restore();
+          if (p.embedded && Math.random() < fuseFrac * 0.5) {
+            g.particles.push({ x: p.x, y: p.y - 2, vx: 0, vy: -0.3, color: "#f97316", radius: Math.random() * 1.5 + 0.5, life: 0, maxLife: 10 });
+          }
           return;
         }
         const r = p.type === "heavy" ? 6 : p.type === "sniper" ? 3 : p.type === "mine" ? 5 : p.type === "emp" ? 5 : 4;

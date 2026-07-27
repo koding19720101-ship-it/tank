@@ -4,7 +4,8 @@ export type WeaponId =
   | "buckshot" | "incendiary" | "mine"
   | "vine" | "tree" | "flower"
   | "emp" | "minigun" | "railgun"
-  | "moveshot" | "bouncyball" | "trickshot";
+  | "moveshot" | "bouncyball" | "trickshot"
+  | "flamethrower" | "volcano" | "hellfire";
 
 export type GroundEffect = "mine" | "vine" | "tree" | "emp";
 
@@ -30,6 +31,12 @@ export interface WeaponDef {
   maxBounces?: number;   // 최대 튕김 횟수
   trickshot?: boolean;   // 트릭샷: 일직선 비행 후 급강하
   straightFrames?: number; // 트릭샷: 급강하 전까지 직진하는 프레임 수
+  burnTicks?: number;    // 화상 지속 틱 수 커스텀 (미지정시 기본값 사용, 클수록 오래 붙음)
+  isFlamethrower?: boolean; // 화염방사기: 전방 원뿔형 즉발 화염
+  flameRange?: number;      // 화염방사기 사거리
+  hellfire?: boolean;       // 지옥의 불: 착탄 후 지연 폭발(점점 붉어짐)
+  fuseFrames?: number;      // 지옥의 불: 착탄 후 폭발까지 걸리는 프레임 수
+  burnsHazards?: boolean;   // 세계수(나무)/덩쿨 지형지물을 태워 없앨 수 있음
 }
 
 export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
@@ -48,9 +55,12 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   moveshot: { label: "이동탄 💨", color: "#f8fafc", radius: 26, maxDmg: 20, isMoveShot: true, selfDamage: 7 },
   bouncyball: { label: "탱탱볼 🎀", color: "#f9a8d4", radius: 18, maxDmg: 5, splitCount: 5, splitDamage: 5, splitDelay: 2, splitAngleDeg: 30, bouncy: true, maxBounces: 5 },
   trickshot: { label: "트릭샷 🎯", color: "#fda4af", radius: 30, maxDmg: 22, trickshot: true, straightFrames: 32 },
+  flamethrower: { label: "화염방사기 🔥", color: "#fb923c", radius: 20, maxDmg: 3, isFlamethrower: true, flameRange: 130, burnTicks: 4, burnsHazards: true },
+  volcano: { label: "화산 🌋", color: "#f97316", radius: 20, maxDmg: 7, splitCount: 5, splitDamage: 7, splitDelay: 2, splitAngleDeg: 32, incendiary: true, burnTicks: 8, burnsHazards: true },
+  hellfire: { label: "지옥의 불 😈", color: "#78716c", radius: 50, maxDmg: 26, hellfire: true, fuseFrames: 75, incendiary: true, burnTicks: 8, burnsHazards: true },
 };
 
-export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat";
+export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat" | "inferno";
 
 export interface TankConfig {
   id: TankId;
@@ -116,7 +126,18 @@ export const TANKS: Record<TankId, TankConfig> = {
     description: "하얀 몸체에 분홍 테두리를 두른 탱크. 자신의 몸을 직접 포탄처럼 날리는 이동탄, 튕겨다니는 탱탱볼, 급강하하는 트릭샷 등 예측 불가능한 기동형 공격을 구사합니다.",
     accentColor: "#f472b6",
   },
+  inferno: {
+    id: "inferno",
+    name: "인페르노 (Inferno)",
+    tag: "화염 특화형 탱크",
+    bodyColor: "#c2410c",
+    maxHp: 110,
+    maxFuel: 120,
+    weapons: ["flamethrower", "volcano", "hellfire"],
+    description: "짙은 주황 몸체에 옅은 주황 테두리를 두른 화염 특화 탱크. 화염방사기, 화산탄, 지옥의 불로 전장을 불태웁니다. 세계수의 나무와 덩쿨탄의 덩쿨 같은 식물성 지형지물을 태워 없앨 수 있습니다.",
+    accentColor: "#fdba74",
+  },
 };
 
 export const DEFAULT_TANK_ID: TankId = "chrome";
-export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt", "oat"];
+export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt", "oat", "inferno"];
