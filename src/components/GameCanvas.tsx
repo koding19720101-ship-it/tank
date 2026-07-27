@@ -115,10 +115,10 @@ export function GameCanvas({
     particles: [] as Particle[],
     myBurn: null as BurnState | null,
     oppBurn: null as BurnState | null,
-    mySlowPending: false,
-    mySlowThisTurn: false,
-    oppSlowPending: false,
-    oppSlowThisTurn: false,
+    mySlowPending: 0,
+    mySlowThisTurn: 0,
+    oppSlowPending: 0,
+    oppSlowThisTurn: 0,
     myLaunch: { active: false, vy: 0 },
     oppLaunch: { active: false, vy: 0 },
     isMyTurn: activeSocketId === socket.id,
@@ -216,11 +216,11 @@ export function GameCanvas({
       if (g.isMyTurn) {
         g.myFuel = myTank.maxFuel; setUiMyFuel(myTank.maxFuel);
         g.mySlowThisTurn = g.mySlowPending;
-        g.mySlowPending = false;
+        g.mySlowPending = 0;
       } else {
         // 상대 턴 시작 시 oppSlow 적용
         g.oppSlowThisTurn = g.oppSlowPending;
-        g.oppSlowPending = false;
+        g.oppSlowPending = 0;
       }
     };
 
@@ -393,7 +393,7 @@ export function GameCanvas({
         applyHpDamage(isMe, dmg);
         if (def.incendiary) igniteTank(isMe);
         if (def.flowerEffect && isMe) {
-          const delta = Math.random() * 30 - 15; // -15 ~ 15
+          const delta = Math.random() * 34 - 17; // -17 ~ 17
           const newAngle = Math.max(0, Math.min(180, Math.round(g.angle + delta)));
           g.angle = newAngle;
           setUiAngle(newAngle);
@@ -448,7 +448,8 @@ export function GameCanvas({
           }
         }
 
-        const moveSpeed = (g.mySlowThisTurn ? 0.75 : 1.5) * speedMultiplier;
+        const slowMultiplier = Math.max(0.15, 1 - 0.15 * g.mySlowThisTurn);
+        const moveSpeed = 1.5 * slowMultiplier * speedMultiplier;
 
         if (g.keys["KeyA"]) {
           g.myX = Math.max(10, g.myX - moveSpeed);
@@ -517,8 +518,8 @@ export function GameCanvas({
             if (hitMe || hitOpp) { explodeAt(h.x, h.y, "mine", false); hzToRemove.add(idx); }
           } else if (h.kind === "vine") {
             if (hitMe || hitOpp) { explodeAt(h.x, h.y, "vine", true); }
-            if (hitMe) { g.mySlowPending = true; spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
-            else if (hitOpp) { g.oppSlowPending = true; spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
+            if (hitMe) { g.mySlowPending += 1; spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
+            else if (hitOpp) { g.oppSlowPending += 1; spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
           } else if (h.kind === "tree") {
             if (treeHitMe && !g.myLaunch.active && (!h.lastTriggerMe || now3 - h.lastTriggerMe > TREE_TRIGGER_COOLDOWN_MS)) {
               g.myLaunch = { active: true, vy: TREE_BOUNCE_VY };
@@ -556,13 +557,13 @@ export function GameCanvas({
               const blastRadius = EMP_EXPLODE_RADIUS * progress;
               if (!h.empLastDamageMe && Math.hypot(g.myX - h.x, g.myY - h.y) < blastRadius + 20) {
                 applyHpDamage(true, WEAPON_DEFS.emp.maxDmg);
-                g.mySlowPending = true;
+                g.mySlowPending += 3;
                 h.empLastDamageMe = now3;
                 spawnParticles(h.x, h.y, 20, 4, ["#facc15", "#38bdf8", "#fff", "#bae6fd"]);
               }
               if (!h.empLastDamageOpp && Math.hypot(g.oppX - h.x, g.oppY - h.y) < blastRadius + 20) {
                 applyHpDamage(false, WEAPON_DEFS.emp.maxDmg);
-                g.oppSlowPending = true;
+                g.oppSlowPending += 3;
                 h.empLastDamageOpp = now3;
                 spawnParticles(h.x, h.y, 20, 4, ["#facc15", "#38bdf8", "#fff", "#bae6fd"]);
               }

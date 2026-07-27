@@ -8,6 +8,7 @@ import { LogOut, Play, Sparkles, Users, Palette, Check, X, Pencil, ShieldAlert }
 import { AvatarEditor } from "@/components/AvatarEditor";
 import { GarageModal } from "@/components/GarageModal";
 import { GameCanvas } from "@/components/GameCanvas";
+import { PatchNotesBar } from "@/components/PatchNotesBar";
 import { TankId, DEFAULT_TANK_ID, TANKS } from "@/lib/tanks";
 
 type MatchmakingState = "IDLE" | "SEARCHING" | "MATCHED";
@@ -475,6 +476,8 @@ export default function LobbyPage() {
           onClose={() => setIsGarageOpen(false)}
         />
       )}
+
+      <PatchNotesBar />
 
       <style>{`
         @keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }

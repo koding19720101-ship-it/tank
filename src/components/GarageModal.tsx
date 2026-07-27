@@ -169,7 +169,7 @@ export function GarageModal({ onClose, currentTankId, onSelectTank, tankStats }:
                       <span style={{ ...styles.weaponBadge, backgroundColor: w.color }}>{w.label}</span>
                       <span style={styles.weaponDamage}>
                         {wid === "vine"
-                          ? "씨앗 5발 · 이속 절반 감소"
+                          ? "씨앗 5발 · 이속 15% 감소(중첩)"
                           : wid === "tree"
                           ? "튕겨나감 · 시간 경과 후 지형화"
                           : w.splitCount
@@ -216,10 +216,10 @@ function weaponDesc(wid: string): string {
     case "buckshot": return "발사 후 공중에서 5갈래로 잘게 분열되는 산탄입니다. 넓은 지역에 골고루 피해를 뿌립니다.";
     case "incendiary": return "5갈래로 분열되는 소이탄입니다. 데미지는 집속탄과 같지만, 적중한 대상에게 불이 붙어 시간이 지나며 추가 화상 피해를 입힙니다.";
     case "mine": return "3발의 지뢰를 발사합니다. 지형에 착지하면 즉시 터지지 않고 설치되며, 아군이든 적이든 밟으면 폭발합니다.";
-    case "vine": return "5개의 씨앗을 날립니다. 바닥에 닿으면 덩쿨이 자라나며, 덩쿨에 닿으면 사라지면서 그 탱크는 다음 턴 이동속도가 절반으로 줄어듭니다.";
-    case "tree": return "닿은 자리에 세계수가 자라납니다. 나무에 처음 닿아 튕겨나갈 때 20 피해를 주며, 심어진 지 몇 초 후 나무는 그대로 단단한 지형으로 변합니다.";
-    case "flower": return "꽃가루 이펙트를 남기는 탄환입니다. 적중한 상대의 조준 각도가 -15~+15 사이로 랜덤하게 흐트러집니다.";
-    case "emp": return "노란색 EMP탄입니다. 닿으면 파란 빈 원이 진동하다 작아지며 구멍을 내며 터집니다. 전기 폭발에 맞으면 15 피해와 함께 이동속도가 50% 감소합니다.";
+    case "vine": return "5개의 씨앗을 날립니다. 바닥에 닿으면 덩쿨이 자라나며, 덩쿨에 닿으면 사라지면서 그 탱크는 다음 턴 이동속도가 15% 감소합니다. 여러 번 맞으면 감소량이 중첩됩니다.";
+    case "tree": return "닿은 자리에 세계수가 자라납니다. 나무에 처음 닿아 튕겨나갈 때 15 피해를 주며, 심어진 지 몇 초 후 나무는 그대로 단단한 지형으로 변합니다.";
+    case "flower": return "꽃가루 이펙트를 남기는 탄환입니다. 적중한 상대의 조준 각도가 -17~+17 사이로 랜덤하게 흐트러집니다.";
+    case "emp": return "노란색 EMP탄입니다. 닿으면 파란 빈 원이 진동하다 작아지며 구멍을 내며 터집니다. 전기 폭발에 맞으면 10 피해와 함께 이동속도가 50% 감소합니다.";
     case "minigun": return "일직선으로 얇은 탄환 20발을 빠르게 연사합니다. 개당 1 피해를 주며 미세하게 지형을 파괴합니다.";
     case "railgun": return "일직선으로 빠르게 나아가는 고에너지 레일건입니다. 얇은 파란 선이 조준된 후 빔이 굵어지며 지나는 대상에게 초당 10의 지속 피해를 줍니다.";
     default: return "";
