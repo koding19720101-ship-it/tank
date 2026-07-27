@@ -1080,14 +1080,14 @@ export function GameCanvas({
           // Barrel
           ctx.save(); ctx.translate(tx, ty - 9); ctx.rotate(-aRad);
           ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(18, 0);
-          ctx.strokeStyle = "#334155"; ctx.lineWidth = 3; ctx.stroke();
+          ctx.strokeStyle = accentColor ?? "#334155"; ctx.lineWidth = 3; ctx.stroke();
           ctx.restore();
         } else {
           // Static barrel (pointing toward enemy team)
           const barrelDir = tank.dir >= 0 ? 0 : Math.PI;
           ctx.save(); ctx.translate(tx, ty - 9); ctx.rotate(barrelDir);
           ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(15, -3);
-          ctx.strokeStyle = "#334155"; ctx.lineWidth = 3; ctx.stroke();
+          ctx.strokeStyle = accentColor ?? "#334155"; ctx.lineWidth = 3; ctx.stroke();
           ctx.restore();
         }
 

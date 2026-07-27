@@ -49,7 +49,7 @@ export function GarageModal({ onClose, currentTankId, onSelectTank, tankStats }:
 
               <div style={styles.tankWrapper}>
                 <div style={{ ...styles.tankTurret, backgroundColor: shade(tank.bodyColor, -10) }}></div>
-                <div style={styles.tankBarrel}></div>
+                <div style={{ ...styles.tankBarrel, backgroundColor: tank.accentColor ?? styles.tankBarrel.backgroundColor, borderColor: tank.accentColor ? shade(tank.accentColor, -20) : undefined }}></div>
                 <div style={{ ...styles.tankBody, backgroundColor: tank.bodyColor, borderColor: tank.accentColor ?? "#475569" }}></div>
                 <div style={styles.tankTreads}>
                   <div style={styles.treadWheel}></div>
