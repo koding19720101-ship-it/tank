@@ -52,6 +52,9 @@ interface Projectile {
   railgunTargetX?: number;
   railgunTargetY?: number;
   isMinigunBullet?: boolean;
+  bounces?: number;    // 탱탱볼: 남은 튕김 횟수
+  tsAge?: number;      // 트릭샷: 경과 프레임
+  tsFalling?: boolean; // 트릭샷: 급강하 전환 여부
 }
 
 interface Hazard {
@@ -92,7 +95,7 @@ interface TankState {
   burn: BurnState | null;
   slowPending: number;
   slowThisTurn: number;
-  launch: { active: boolean; vy: number };
+  launch: { active: boolean; vy: number; vx?: number; isMoveShot?: boolean };
   dead: boolean;
   tankId: TankId;
   bodyColor: string;
@@ -274,7 +277,11 @@ export function GameCanvas({
         tank.dir = action.direction;
         if (g.terrain.length) tank.y = g.terrain[Math.round(Math.min(WORLD_W - 1, Math.max(0, tank.x)))];
       } else if (action.type === "fire") {
-        spawnProjectile(action.x, action.y, action.angle, action.power, action.weapon, action.socketId);
+        if (WEAPON_DEFS[action.weapon as WeaponId]?.isMoveShot) {
+          launchMoveShot(action.socketId, action.angle, action.power);
+        } else {
+          spawnProjectile(action.x, action.y, action.angle, action.power, action.weapon, action.socketId);
+        }
       }
     };
 
@@ -494,6 +501,40 @@ export function GameCanvas({
     explodeAt(p.x, p.y, p.type, !!p.isSplit);
   };
 
+  // ── 이동탄(moveshot): 자신의 몸이 포탄 대신 날아감 ────────────────────────
+  const launchMoveShot = (socketId: string, ang: number, pwr: number) => {
+    const g = G.current;
+    const tank = g.tanks.find(t => t.socketId === socketId);
+    if (!tank || tank.dead) return;
+    const angRad = (ang * Math.PI) / 180;
+    const spd = pwr * 0.15;
+    tank.launch = {
+      active: true,
+      vy: -Math.sin(angRad) * spd,
+      vx: Math.cos(angRad) * spd,
+      isMoveShot: true,
+    };
+  };
+
+  // 착지(또는 적 근접) 시점에 호출: 20데미지, 적중시에만 자신도 7데미지
+  const moveShotImpact = (socketId: string, ex: number, ey: number) => {
+    const g = G.current;
+    const def = WEAPON_DEFS.moveshot;
+    destructTerrain(ex, ey, 30);
+    spawnParticles(ex, ey, 30, 4, ["#f8fafc", "#f9a8d4", "#e2e8f0"]);
+    let hitEnemy = false;
+    g.tanks.forEach(tank => {
+      if (tank.dead || tank.socketId === socketId) return;
+      const dist = Math.hypot(tank.x - ex, tank.y - ey);
+      if (dist < def.radius) {
+        const dmg = Math.round(def.maxDmg * (1 - dist / def.radius));
+        applyHpDamage(tank.socketId, dmg);
+        hitEnemy = true;
+      }
+    });
+    if (hitEnemy) applyHpDamage(socketId, def.selfDamage ?? 7);
+  };
+
   // ── Main Canvas Loop ─────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -513,8 +554,11 @@ export function GameCanvas({
       // ─ Camera smooth follow ─
       // Follow active tank or fired projectile
       const activeTank = g.tanks.find(t => t.socketId === g.activeSocketId && !t.dead);
+      const flyingMoveTank = g.tanks.find(t => t.launch.active && t.launch.isMoveShot);
       let targetCamX = g.camTargetX;
-      if (g.projectiles.length > 0) {
+      if (flyingMoveTank) {
+        targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, flyingMoveTank.x - VIEW_W / 2));
+      } else if (g.projectiles.length > 0) {
         const firstProj = g.projectiles[0];
         targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, firstProj.x - VIEW_W / 2));
       } else if (activeTank) {
@@ -564,9 +608,17 @@ export function GameCanvas({
         if (t.dead) return;
         if (t.launch.active) {
           t.y += t.launch.vy;
-          t.launch.vy += GRAVITY * 0.6;
+          if (t.launch.vx) {
+            t.x = Math.max(10, Math.min(WORLD_W - 10, t.x + t.launch.vx));
+          }
+          t.launch.vy += GRAVITY * (t.launch.isMoveShot ? 1 : 0.6);
           const groundY = g.terrain[Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)))];
-          if (groundY !== undefined && t.y >= groundY) { t.y = groundY; t.launch.active = false; }
+          if (groundY !== undefined && t.y >= groundY) {
+            t.y = groundY;
+            const wasMoveShot = t.launch.isMoveShot;
+            t.launch.active = false;
+            if (wasMoveShot) moveShotImpact(t.socketId, t.x, t.y);
+          }
         } else {
           const rx = Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)));
           if (g.terrain[rx] !== undefined) t.y = g.terrain[rx];
@@ -687,8 +739,19 @@ export function GameCanvas({
           continue;
         }
 
-        p.x += p.vx; p.y += p.vy;
-        if (!p.isMinigunBullet) p.vy += GRAVITY; else p.vy += GRAVITY * 0.15;
+        if (def.trickshot) {
+          // 트릭샷: 일직선으로 날다가 중간 지점에서 90도로 급강하
+          p.tsAge = (p.tsAge ?? 0) + 1;
+          if (!p.tsFalling && p.tsAge >= (def.straightFrames ?? 32)) {
+            p.tsFalling = true;
+            p.vx = 0;
+            p.vy = 9;
+          }
+          p.x += p.vx; p.y += p.vy;
+        } else {
+          p.x += p.vx; p.y += p.vy;
+          if (!p.isMinigunBullet) p.vy += GRAVITY; else p.vy += GRAVITY * 0.15;
+        }
 
         if (p.type === "sniper" && p.x >= 0 && p.x < WORLD_W) {
           const rix = Math.round(p.x);
@@ -707,7 +770,7 @@ export function GameCanvas({
               for (let j = 0; j < count; j++) {
                 const t = count > 1 ? j / (count - 1) - 0.5 : 0;
                 const ang = baseAngle + t * totalRad;
-                g.projectiles.push({ id: Math.random().toString(36).slice(2), x: p.x, y: p.y, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed, type: p.type, isSplit: true, ownerSocketId: p.ownerSocketId });
+                g.projectiles.push({ id: Math.random().toString(36).slice(2), x: p.x, y: p.y, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed, type: p.type, isSplit: true, ownerSocketId: p.ownerSocketId, bounces: def.bouncy ? def.maxBounces : undefined });
               }
             } else {
               const spread = def.spreadFactor ?? 1.7;
@@ -744,7 +807,14 @@ export function GameCanvas({
         }
 
         if (outOfBounds || hitTerrain) {
-          if (def.groundEffect) {
+          if (def.bouncy && hitTerrain && (p.bounces ?? def.maxBounces ?? 0) > 0) {
+            // 탱탱볼: 닿을시 약간 터지고(개당 데미지) 튕겨나감 — 아직 튕길 횟수가 남음
+            explodeAt(p.x, p.y, p.type, true);
+            p.vy = -Math.abs(p.vy) * 0.55;
+            p.vx *= 0.85;
+            p.y -= 3;
+            p.bounces = (p.bounces ?? def.maxBounces ?? 5) - 1;
+          } else if (def.groundEffect) {
             if (hitTerrain) {
               const rx2 = Math.max(0, Math.min(WORLD_W - 1, rix));
               const hazard: Hazard = { id: Math.random().toString(36).slice(2), x: p.x, y: g.terrain[rx2], kind: def.groundEffect, plantedAt: Date.now() };
@@ -753,10 +823,15 @@ export function GameCanvas({
               const palette = def.groundEffect === "vine" ? ["#65a30d", "#a3e635"] : def.groundEffect === "tree" ? ["#16a34a", "#4ade80", "#166534"] : def.groundEffect === "emp" ? ["#facc15", "#38bdf8", "#fff"] : undefined;
               spawnParticles(p.x, p.y, 6, 2, palette);
             }
+            toRemove.push(i);
           } else {
-            handleExplosion(p);
+            if (def.bouncy && hitTerrain) {
+              explodeAt(p.x, p.y, p.type, true);
+            } else {
+              handleExplosion(p);
+            }
+            toRemove.push(i);
           }
-          toRemove.push(i);
         }
       }
       toRemove.forEach(i => g.projectiles.splice(i, 1));
@@ -779,7 +854,8 @@ export function GameCanvas({
 
       // Auto end turn
       const hasActiveEmp = g.hazards.some(h => h.kind === "emp" && h.empPhase !== "done");
-      if (g.projectiles.length === 0 && g.minigunQueue.length === 0 && !hasActiveEmp && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
+      const hasFlyingMoveShot = g.tanks.some(t => t.launch.active && t.launch.isMoveShot);
+      if (g.projectiles.length === 0 && g.minigunQueue.length === 0 && !hasActiveEmp && !hasFlyingMoveShot && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
         g.turnEndEmitted = true;
         socket.emit("game-turn-end", { roomName });
       }
@@ -937,6 +1013,12 @@ export function GameCanvas({
         ctx.fillStyle = tank.bodyColor;
         ctx.beginPath(); ctx.roundRect(-14, -9, 28, 8, 2); ctx.fill();
         ctx.strokeStyle = "#334155"; ctx.lineWidth = 1; ctx.stroke();
+        // 탱크별 강조 테두리 (예: 오트의 분홍 테두리)
+        const accentColor = TANKS[tank.tankId]?.accentColor;
+        if (accentColor) {
+          ctx.beginPath(); ctx.roundRect(-14, -9, 28, 8, 2);
+          ctx.strokeStyle = accentColor; ctx.lineWidth = 1.5; ctx.stroke();
+        }
         // Team outline
         ctx.strokeStyle = tank.team === "red" ? "#f87171" : "#60a5fa";
         ctx.lineWidth = 1.5; ctx.stroke();
@@ -1111,7 +1193,11 @@ export function GameCanvas({
     const me = g.tanks.find(t => t.socketId === mySocketId);
     if (!me || me.dead) return;
     g.firedThisTurn = true;
-    spawnProjectile(me.x, me.y, g.angle, g.power, g.weapon, mySocketId);
+    if (WEAPON_DEFS[g.weapon].isMoveShot) {
+      launchMoveShot(mySocketId, g.angle, g.power);
+    } else {
+      spawnProjectile(me.x, me.y, g.angle, g.power, g.weapon, mySocketId);
+    }
     socket.emit("game-action", {
       roomName,
       action: { type: "fire", x: me.x, y: me.y, angle: g.angle, power: g.power, weapon: g.weapon, socketId: mySocketId },

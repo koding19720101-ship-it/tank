@@ -3,7 +3,8 @@ export type WeaponId =
   | "heavy" | "sniper" | "cluster"
   | "buckshot" | "incendiary" | "mine"
   | "vine" | "tree" | "flower"
-  | "emp" | "minigun" | "railgun";
+  | "emp" | "minigun" | "railgun"
+  | "moveshot" | "bouncyball" | "trickshot";
 
 export type GroundEffect = "mine" | "vine" | "tree" | "emp";
 
@@ -23,6 +24,12 @@ export interface WeaponDef {
   isEmp?: boolean;       // EMP 폭발 효과
   isMinigun?: boolean;   // 미니건 연사 효과
   isRailgun?: boolean;   // 레일건 조준/지속 타격 효과
+  isMoveShot?: boolean;  // 이동탄: 자신의 몸이 포탄 대신 날아감
+  selfDamage?: number;   // 이동탄류: 적중시 자신이 입는 반동 데미지
+  bouncy?: boolean;      // 탱탱볼류: 지형에 닿을때 튕겨다님
+  maxBounces?: number;   // 최대 튕김 횟수
+  trickshot?: boolean;   // 트릭샷: 일직선 비행 후 급강하
+  straightFrames?: number; // 트릭샷: 급강하 전까지 직진하는 프레임 수
 }
 
 export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
@@ -38,9 +45,12 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   emp: { label: "EMP탄 ⚡", color: "#facc15", radius: 32, maxDmg: 10, isEmp: true, groundEffect: "emp" },
   minigun: { label: "미니건 🔫", color: "#cbd5e1", radius: 6, maxDmg: 1, isMinigun: true },
   railgun: { label: "레일건 🔮", color: "#38bdf8", radius: 12, maxDmg: 10, isRailgun: true },
+  moveshot: { label: "이동탄 💨", color: "#f8fafc", radius: 26, maxDmg: 20, isMoveShot: true, selfDamage: 7 },
+  bouncyball: { label: "탱탱볼 🎀", color: "#f9a8d4", radius: 18, maxDmg: 5, splitCount: 5, splitDamage: 5, splitDelay: 2, splitAngleDeg: 30, bouncy: true, maxBounces: 5 },
+  trickshot: { label: "트릭샷 🎯", color: "#fda4af", radius: 30, maxDmg: 22, trickshot: true, straightFrames: 32 },
 };
 
-export type TankId = "chrome" | "shotgun" | "forest" | "bolt";
+export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat";
 
 export interface TankConfig {
   id: TankId;
@@ -51,6 +61,7 @@ export interface TankConfig {
   maxFuel: number;
   weapons: WeaponId[];
   description: string;
+  accentColor?: string; // 몸체 테두리 강조색 (지정시 바디 테두리에 표시)
 }
 
 export const TANKS: Record<TankId, TankConfig> = {
@@ -94,7 +105,18 @@ export const TANKS: Record<TankId, TankConfig> = {
     weapons: ["emp", "minigun", "railgun"],
     description: "순백의 바디를 가진 첨단 전자기 탱크. EMP 수류탄으로 이동을 방해하고, 20연사 미니건과 일직선 감응형 레일건으로 압도적 화력을 퍼붓습니다.",
   },
+  oat: {
+    id: "oat",
+    name: "오트 (Oat)",
+    tag: "특수 기동형 탱크",
+    bodyColor: "#ffffff",
+    maxHp: 90,
+    maxFuel: 100,
+    weapons: ["moveshot", "bouncyball", "trickshot"],
+    description: "하얀 몸체에 분홍 테두리를 두른 탱크. 자신의 몸을 직접 포탄처럼 날리는 이동탄, 튕겨다니는 탱탱볼, 급강하하는 트릭샷 등 예측 불가능한 기동형 공격을 구사합니다.",
+    accentColor: "#f472b6",
+  },
 };
 
 export const DEFAULT_TANK_ID: TankId = "chrome";
-export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt"];
+export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt", "oat"];
