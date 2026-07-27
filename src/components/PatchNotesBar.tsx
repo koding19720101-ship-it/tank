@@ -6,7 +6,6 @@ import { PATCH_NOTES } from "@/lib/patchnotes";
 
 export function PatchNotesBar() {
   const [expanded, setExpanded] = useState(false);
-  const latest = PATCH_NOTES[0];
 
   return (
     <div style={styles.wrapper}>
@@ -14,8 +13,6 @@ export function PatchNotesBar() {
         <span style={styles.headerLeft}>
           <ScrollText size={14} />
           <span>패치노트</span>
-          <span style={styles.date}>{latest.date}</span>
-          <span style={styles.title}>{latest.title}</span>
         </span>
         {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
       </button>
@@ -59,6 +56,7 @@ const styles: { [key: string]: React.CSSProperties } = {
   body: {
     overflowY: "auto", padding: "0 16px 14px 16px",
     borderTop: "1px solid rgba(255,255,255,0.06)",
+    flex: "1 1 auto", minHeight: 0,
   },
   noteBlock: { padding: "12px 0", borderBottom: "1px solid rgba(255,255,255,0.05)" },
   noteHeader: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" },
