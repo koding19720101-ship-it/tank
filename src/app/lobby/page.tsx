@@ -44,6 +44,7 @@ export default function LobbyPage() {
   // Matchmaking & UI states
   const [matchState, setMatchState] = useState<MatchmakingState>("IDLE");
   const [selectedMode, setSelectedMode] = useState<GameMode>("1v1");
+  const [isModeModalOpen, setIsModeModalOpen] = useState(false);
   const [searchDuration, setSearchDuration] = useState(0);
   const [matchFoundData, setMatchFoundData] = useState<{ team: "red" | "blue"; teammates: PlayerProfile[]; opponents: PlayerProfile[]; mode: GameMode } | null>(null);
   const [roomName, setRoomName] = useState<string | null>(null);
@@ -360,45 +361,13 @@ export default function LobbyPage() {
                     <span>🏆 최고 승률 탱크: {TANKS[bestTankInfo.tankId].name} ({bestTankInfo.rate}% - {bestTankInfo.wins}승 {bestTankInfo.losses}패)</span>
                   </div>
                 )}
-                <p style={styles.readySubtext}>모드를 선택하고 매칭을 시작하세요! 팀전에서는 팀원 전원이 사망하면 패배합니다.</p>
-
-                {/* Mode Selection */}
-                <div style={styles.modeGrid}>
-                  {(["1v1", "2v2", "3v3"] as GameMode[]).map((mode) => {
-                    const m = MODE_LABELS[mode];
-                    const active = selectedMode === mode;
-                    return (
-                      <button
-                        key={mode}
-                        onClick={() => setSelectedMode(mode)}
-                        style={{
-                          ...styles.modeBtn,
-                          borderColor: active ? m.color : "rgba(255,255,255,0.1)",
-                          background: active ? `rgba(${hexToRgb(m.color)},0.18)` : "rgba(255,255,255,0.04)",
-                          boxShadow: active ? `0 0 16px ${m.color}44` : "none",
-                          transform: active ? "scale(1.04)" : "scale(1)",
-                        }}
-                      >
-                        <span style={{ fontSize: "22px" }}>{m.icon}</span>
-                        <span style={{ fontSize: "15px", fontWeight: "bold", color: active ? m.color : "#e2e8f0" }}>{m.label}</span>
-                        <span style={{ fontSize: "11px", color: "#94a3b8" }}>{m.desc}</span>
-                        {active && <span style={{ fontSize: "10px", color: m.color, fontWeight: "bold", background: `${m.color}22`, padding: "2px 8px", borderRadius: "10px" }}>선택됨</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Friendly fire notice */}
-                <div style={styles.ffNotice}>
-                  <ShieldAlert size={13} color="#f59e0b" />
-                  <span>팀원 공격 가능 (아군 피해 주의!)</span>
-                </div>
+                <p style={styles.readySubtext}>플레이 버튼을 눌러 모드를 선택하고 상대를 찾아보세요!</p>
 
                 <div style={styles.actionRow}>
                   <button onClick={() => setIsGarageOpen(true)} style={styles.lobbyGarageBtn}>🔧 정비소</button>
-                  <button onClick={() => handleStartMatchmaking(selectedMode)} style={styles.playBtn}>
+                  <button onClick={() => setIsModeModalOpen(true)} style={styles.playBtn}>
                     <Swords size={20} />
-                    <span>{MODE_LABELS[selectedMode].label} 매칭 시작</span>
+                    <span>매칭</span>
                   </button>
                 </div>
               </div>
@@ -491,15 +460,61 @@ export default function LobbyPage() {
         <GarageModal currentTankId={selectedTankId} onSelectTank={selectTank} tankStats={tankStats} onClose={() => setIsGarageOpen(false)} />
       )}
 
+      {/* 모드 선택 모달 */}
+      {isModeModalOpen && (
+        <div style={styles.modalOverlay} onClick={() => setIsModeModalOpen(false)}>
+          <div style={styles.modalBox} onClick={e => e.stopPropagation()}>
+            <h3 style={styles.modalTitle}>⚔️ 대전 모드 선택</h3>
+            <p style={styles.modalSubtext}>팀전에서는 아군 공격 가능, 팀 전원 사망 시 패배</p>
+            <div style={styles.modalModeGrid}>
+              {(["1v1", "2v2", "3v3"] as GameMode[]).map((mode) => {
+                const m = MODE_LABELS[mode];
+                const active = selectedMode === mode;
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setSelectedMode(mode)}
+                    style={{
+                      ...styles.modalModeBtn,
+                      borderColor: active ? m.color : "rgba(255,255,255,0.12)",
+                      background: active ? `rgba(${hexToRgb(m.color)},0.2)` : "rgba(255,255,255,0.04)",
+                      boxShadow: active ? `0 0 20px ${m.color}55` : "none",
+                    }}
+                  >
+                    <span style={{ fontSize: "28px" }}>{m.icon}</span>
+                    <span style={{ fontSize: "17px", fontWeight: "bold", color: active ? m.color : "#e2e8f0" }}>{m.label}</span>
+                    <span style={{ fontSize: "12px", color: "#94a3b8" }}>{m.desc}</span>
+                    {active && (
+                      <span style={{ fontSize: "10px", color: m.color, background: `${m.color}22`, padding: "2px 10px", borderRadius: "10px", fontWeight: "bold" }}>선택됨 ✓</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{ display: "flex", gap: "10px", marginTop: "8px" }}>
+              <button onClick={() => setIsModeModalOpen(false)} style={styles.modalCancelBtn}>취소</button>
+              <button
+                onClick={() => { setIsModeModalOpen(false); handleStartMatchmaking(selectedMode); }}
+                style={{ ...styles.modalStartBtn, background: `linear-gradient(135deg, ${MODE_LABELS[selectedMode].color}, #d946ef)` }}
+              >
+                {MODE_LABELS[selectedMode].icon} {MODE_LABELS[selectedMode].label} 매칭 시작
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <PatchNotesBar />
 
       <style>{`
         @keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes modalIn { from { opacity:0; transform:scale(0.92) translateY(16px); } to { opacity:1; transform:scale(1) translateY(0); } }
       `}</style>
     </div>
   );
 }
+
 
 function hexToRgb(hex: string): string {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -559,4 +574,12 @@ const styles: { [key: string]: React.CSSProperties } = {
   matchedSubtext: { color: "#94a3b8", fontSize: "13px" },
   loadingContainer: { minHeight: "100vh", background: "#090d16", color: "#f8fafc", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "16px", fontSize: "16px" },
   spinner: { width: "40px", height: "40px", border: "4px solid rgba(99,102,241,0.2)", borderTop: "4px solid #6366f1", borderRadius: "50%", animation: "spin 1s linear infinite" },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 },
+  modalBox: { background: "rgba(15,23,42,0.97)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: "20px", padding: "32px 28px", display: "flex", flexDirection: "column", alignItems: "center", gap: "16px", maxWidth: "480px", width: "90%", boxShadow: "0 30px 60px rgba(0,0,0,0.6)", animation: "modalIn 0.22s ease" },
+  modalTitle: { fontSize: "20px", fontWeight: "bold", margin: 0 },
+  modalSubtext: { color: "#f59e0b", fontSize: "12px", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.25)", padding: "5px 14px", borderRadius: "20px", margin: 0 },
+  modalModeGrid: { display: "flex", gap: "12px", width: "100%", justifyContent: "center" },
+  modalModeBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: "6px", padding: "16px 18px", borderRadius: "14px", border: "1.5px solid", cursor: "pointer", transition: "all 0.18s", flex: 1, background: "transparent", color: "#e2e8f0" },
+  modalCancelBtn: { background: "transparent", color: "#94a3b8", border: "1px solid rgba(255,255,255,0.12)", padding: "12px 24px", borderRadius: "10px", fontSize: "14px", cursor: "pointer", fontWeight: "600" },
+  modalStartBtn: { flex: 1, color: "#fff", border: "none", padding: "12px 24px", borderRadius: "10px", fontSize: "15px", fontWeight: "bold", cursor: "pointer", boxShadow: "0 4px 14px rgba(99,102,241,0.4)" },
 };
