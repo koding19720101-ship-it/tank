@@ -740,12 +740,16 @@ export function GameCanvas({
         }
 
         if (def.trickshot) {
-          // 트릭샷: 일직선으로 날다가 중간 지점에서 90도로 급강하
-          p.tsAge = (p.tsAge ?? 0) + 1;
-          if (!p.tsFalling && p.tsAge >= (def.straightFrames ?? 32)) {
-            p.tsFalling = true;
-            p.vx = 0;
-            p.vy = 9;
+          // 트릭샷: 일직선으로 날다가 아래에 상대 탱크가 감지되면 90도로 급강하
+          if (!p.tsFalling) {
+            const belowTank = g.tanks.find(t =>
+              !t.dead && t.socketId !== p.ownerSocketId && Math.abs(t.x - p.x) < 20
+            );
+            if (belowTank) {
+              p.tsFalling = true;
+              p.vx = 0;
+              p.vy = 9;
+            }
           }
           p.x += p.vx; p.y += p.vy;
         } else {
