@@ -50,7 +50,7 @@ export function GarageModal({ onClose, currentTankId, onSelectTank, tankStats }:
               <div style={styles.tankWrapper}>
                 <div style={{ ...styles.tankTurret, backgroundColor: shade(tank.bodyColor, -10) }}></div>
                 <div style={styles.tankBarrel}></div>
-                <div style={{ ...styles.tankBody, backgroundColor: tank.bodyColor }}></div>
+                <div style={{ ...styles.tankBody, backgroundColor: tank.bodyColor, borderColor: tank.accentColor ?? "#475569" }}></div>
                 <div style={styles.tankTreads}>
                   <div style={styles.treadWheel}></div>
                   <div style={styles.treadWheel}></div>
@@ -222,6 +222,9 @@ function weaponDesc(wid: string): string {
     case "emp": return "노란색 EMP탄입니다. 닿으면 파란 빈 원이 진동하다 작아지며 구멍을 내며 터집니다. 전기 폭발에 맞으면 10 피해와 함께 이동속도가 50% 감소합니다.";
     case "minigun": return "일직선으로 얇은 탄환 20발을 빠르게 연사합니다. 개당 1 피해를 주며 미세하게 지형을 파괴합니다.";
     case "railgun": return "일직선으로 빠르게 나아가는 고에너지 레일건입니다. 얇은 파란 선이 조준된 후 빔이 굵어지며 지나는 대상에게 초당 10의 지속 피해를 줍니다.";
+    case "moveshot": return "포를 쏘는 대신 자신의 몸이 직접 포탄처럼 날아갑니다. 착지하며 폭발해 주변 적에게 20 피해를 주지만, 적을 맞췄을 경우 반동으로 자신도 7 피해를 입습니다.";
+    case "bouncyball": return "분홍색 탄 5발을 발사합니다. 지형에 닿을 때마다 약하게 터지며 개당 5 피해를 주고, 최대 5번까지 튕겨다니다 마지막에 완전히 소멸합니다.";
+    case "trickshot": return "일직선으로 곧게 날아가다가 진행 경로 아래에 상대 탱크가 감지되면 그 지점에서 90도로 급강하해 착탄과 동시에 폭발합니다.";
     default: return "";
   }
 }

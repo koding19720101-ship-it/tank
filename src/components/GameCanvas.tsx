@@ -1017,15 +1017,15 @@ export function GameCanvas({
         ctx.fillStyle = tank.bodyColor;
         ctx.beginPath(); ctx.roundRect(-14, -9, 28, 8, 2); ctx.fill();
         ctx.strokeStyle = "#334155"; ctx.lineWidth = 1; ctx.stroke();
-        // 탱크별 강조 테두리 (예: 오트의 분홍 테두리)
+        // Team outline
+        ctx.strokeStyle = tank.team === "red" ? "#f87171" : "#60a5fa";
+        ctx.lineWidth = 1.5; ctx.stroke();
+        // 탱크별 강조 테두리 (예: 오트의 분홍 테두리) — 팀 색상 위에 그려 항상 보이도록 함
         const accentColor = TANKS[tank.tankId]?.accentColor;
         if (accentColor) {
           ctx.beginPath(); ctx.roundRect(-14, -9, 28, 8, 2);
           ctx.strokeStyle = accentColor; ctx.lineWidth = 1.5; ctx.stroke();
         }
-        // Team outline
-        ctx.strokeStyle = tank.team === "red" ? "#f87171" : "#60a5fa";
-        ctx.lineWidth = 1.5; ctx.stroke();
         // Turret
         ctx.fillStyle = "#64748b";
         ctx.beginPath(); ctx.arc(0, -9, 6, Math.PI, 0); ctx.fill();
