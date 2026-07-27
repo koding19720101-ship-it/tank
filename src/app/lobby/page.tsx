@@ -2,7 +2,7 @@
 
 import { useSession as useAuthSession, signOut as authSignOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import { LogOut, Play, Sparkles, Users, Palette, Check, X, Pencil, ShieldAlert, Swords } from "lucide-react";
 import { AvatarEditor } from "@/components/AvatarEditor";
@@ -240,7 +240,7 @@ export default function LobbyPage() {
     setIsEditingNickname(false);
   };
 
-  const handleGameFinished = (reason: string) => {
+  const handleGameFinished = useCallback((reason: string) => {
     setIsPlaying(false);
     setGameStartInfo(null);
     setMatchState("IDLE");
@@ -259,7 +259,17 @@ export default function LobbyPage() {
     } else {
       alert("게임이 종료되었습니다!");
     }
-  };
+  }, [session, losses, wins]);
+
+  // Stable profile object for GameCanvas — prevents its heavy render-loop
+  // effects from tearing down/restarting on every unrelated lobby re-render
+  // (e.g. the frequent "online-stats" broadcast from the matchmaker server).
+  const myGameProfile = useMemo(() => ({
+    id: (session?.user as any)?.id || session?.user?.email || "me",
+    name: session?.user?.name || "나",
+    image: customAvatar || getBlankWhiteAvatar(),
+    tankId: selectedTankId,
+  }), [session, customAvatar, selectedTankId]);
 
   if (status === "loading") {
     return (
@@ -279,12 +289,7 @@ export default function LobbyPage() {
         <GameCanvas
           socket={socketRef.current}
           roomName={roomName}
-          myProfile={{
-            id: (session.user as any).id || session.user.email || "me",
-            name: session.user.name || "나",
-            image: displayAvatar,
-            tankId: selectedTankId,
-          }}
+          myProfile={myGameProfile}
           initialSeed={gameStartInfo.seed}
           allPlayers={gameStartInfo.players}
           turnOrder={gameStartInfo.turnOrder}
