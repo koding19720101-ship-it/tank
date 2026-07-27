@@ -9,7 +9,7 @@ import { AvatarEditor } from "@/components/AvatarEditor";
 import { GarageModal } from "@/components/GarageModal";
 import { GameCanvas } from "@/components/GameCanvas";
 import { PatchNotesBar } from "@/components/PatchNotesBar";
-import { TankId, DEFAULT_TANK_ID, TANKS } from "@/lib/tanks";
+import { TankId, DEFAULT_TANK_ID, TANKS, TANK_ORDER } from "@/lib/tanks";
 
 type MatchmakingState = "IDLE" | "SEARCHING" | "MATCHED";
 type GameMode = "1v1" | "2v2" | "3v3";
@@ -93,7 +93,7 @@ export default function LobbyPage() {
       const saved = localStorage.getItem(`custom_avatar_${userId}`);
       setCustomAvatar(saved || getBlankWhiteAvatar());
       const savedTank = localStorage.getItem(`selected_tank_${userId}`) as TankId | null;
-      if (savedTank === "chrome" || savedTank === "shotgun" || savedTank === "forest" || savedTank === "bolt") setSelectedTankId(savedTank);
+      if (savedTank && (TANK_ORDER as string[]).includes(savedTank)) setSelectedTankId(savedTank);
 
       const w = parseInt(localStorage.getItem(`user_wins_${userId}`) || "0", 10);
       const l = parseInt(localStorage.getItem(`user_losses_${userId}`) || "0", 10);
@@ -248,12 +248,28 @@ export default function LobbyPage() {
     setRoomName(null);
 
     const userId = session?.user ? ((session.user as any).id || session.user.email || "default") : null;
+    const playedTankId = tankIdRef.current;
+
+    const recordTankResult = (result: "win" | "loss") => {
+      if (!userId) return;
+      setTankStats((prev) => {
+        const prevSt = prev[playedTankId] || { wins: 0, losses: 0 };
+        const nextSt = result === "win"
+          ? { wins: prevSt.wins + 1, losses: prevSt.losses }
+          : { wins: prevSt.wins, losses: prevSt.losses + 1 };
+        const next = { ...prev, [playedTankId]: nextSt };
+        localStorage.setItem(`tank_stats_${userId}`, JSON.stringify(next));
+        return next;
+      });
+    };
 
     if (reason === "defeat") {
       if (userId) { const nl = losses + 1; setLosses(nl); localStorage.setItem(`user_losses_${userId}`, nl.toString()); }
+      recordTankResult("loss");
       alert("패배했습니다! 다음엔 꼭 이겨보세요. 💪");
     } else if (reason === "victory" || reason === "opponent_left") {
       if (userId) { const nw = wins + 1; setWins(nw); localStorage.setItem(`user_wins_${userId}`, nw.toString()); }
+      recordTankResult("win");
       if (reason === "opponent_left") alert("상대방이 게임에서 탈주하여 승리했습니다! 🏆");
       else alert("승리했습니다! 🏆 훌륭한 포격이었어요!");
     } else {
