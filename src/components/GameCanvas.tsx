@@ -5,14 +5,34 @@ import { Socket } from "socket.io-client";
 import { Shield, Zap } from "lucide-react";
 import { WEAPON_DEFS, WeaponId, TANKS, TankId, DEFAULT_TANK_ID } from "@/lib/tanks";
 
+type GameMode = "1v1" | "2v2" | "3v3";
+
+interface PlayerSlot {
+  socketId: string;
+  team: "red" | "blue";
+  slotIndex: number;
+  x: number;
+  hp: number;
+  profile: {
+    id: string;
+    name: string;
+    image: string;
+    tankId?: TankId;
+    winRate?: number;
+    wins?: number;
+    losses?: number;
+  };
+}
+
 interface GameCanvasProps {
   socket: Socket;
   roomName: string;
   myProfile: { id: string; name: string; image: string; tankId?: TankId; winRate?: number; wins?: number; losses?: number };
-  opponentProfile: { id: string; name: string; image: string; tankId?: TankId; winRate?: number; wins?: number; losses?: number };
   initialSeed: number;
-  playersInfo: Array<{ socketId: string; x: number; hp: number }>;
+  allPlayers: PlayerSlot[];
+  turnOrder: string[];
   activeSocketId: string;
+  mode: GameMode;
   onGameEnded: (reason: string) => void;
 }
 
@@ -25,14 +45,12 @@ interface Projectile {
   type: WeaponId;
   splitTimer?: number;
   isSplit?: boolean;
-  owner: "me" | "opp";
-  // railgun
-  railgunPhase?: "beam" | "growing"; // beam=thin line, growing=expanding
-  railgunAge?: number;              // frame counter
-  railgunWidth?: number;            // current visual width
-  railgunTargetX?: number;          // where beam ends (terrain hit)
+  ownerSocketId: string;
+  railgunPhase?: "beam" | "growing";
+  railgunAge?: number;
+  railgunWidth?: number;
+  railgunTargetX?: number;
   railgunTargetY?: number;
-  // minigun
   isMinigunBullet?: boolean;
 }
 
@@ -42,14 +60,11 @@ interface Hazard {
   y: number;
   kind: "mine" | "vine" | "tree" | "emp";
   plantedAt: number;
-  lastTriggerMe?: number;
-  lastTriggerOpp?: number;
-  // emp
+  lastTriggerMap?: Record<string, number>;
   empPhase?: "vibrate" | "explode" | "done";
-  empRadius?: number;          // current circle radius during vibrate
-  empExplodeAt?: number;       // timestamp when explosion starts
-  empLastDamageMe?: number;
-  empLastDamageOpp?: number;
+  empRadius?: number;
+  empExplodeAt?: number;
+  empLastDamageSet?: Set<string>;
 }
 
 interface BurnState {
@@ -64,19 +79,42 @@ interface Particle {
   life: number; maxLife: number;
 }
 
-const CANVAS_W = 800;
-const CANVAS_H = 500;
+interface TankState {
+  socketId: string;
+  team: "red" | "blue";
+  x: number;
+  y: number;
+  hp: number;
+  maxHp: number;
+  fuel: number;
+  maxFuel: number;
+  dir: number;
+  burn: BurnState | null;
+  slowPending: number;
+  slowThisTurn: number;
+  launch: { active: boolean; vy: number };
+  dead: boolean;
+  tankId: TankId;
+  bodyColor: string;
+  profile: PlayerSlot["profile"];
+}
+
+const WORLD_W = 2400;
+const CANVAS_H = 550;
+// Viewport size (what the player sees)
+const VIEW_W = 900;
+const VIEW_H = 550;
 const GRAVITY = 0.25;
 const BURN_DMG_PER_TICK = 2;
 const BURN_TICKS = 4;
 const MINE_TRIGGER_RADIUS = 13;
 const TREE_CONVERT_MS = 4000;
 const TREE_BOUNCE_VY = -7.5;
-const EMP_VIBRATE_MS = 1500;    // EMP 진동 지속 시간
-const EMP_EXPLODE_RADIUS = 64;  // EMP 폭발 최종 반경 (픽셀)
-const RAILGUN_BEAM_FRAMES = 18; // 얇은 선 단계 (프레임)
-const RAILGUN_GROW_FRAMES = 30; // 빔 확장 단계 (프레임)
-const RAILGUN_DMG_INTERVAL = 200; // 레일건 초당 데미지 체크 간격 (ms)
+const EMP_VIBRATE_MS = 1500;
+const EMP_EXPLODE_RADIUS = 64;
+const RAILGUN_BEAM_FRAMES = 18;
+const RAILGUN_GROW_FRAMES = 30;
+const RAILGUN_DMG_INTERVAL = 200;
 const TREE_TRIGGER_COOLDOWN_MS = 1500;
 const TREE_TRIGGER_RADIUS = 26;
 const TREE_MOUND_RADIUS = 50;
@@ -86,43 +124,55 @@ export function GameCanvas({
   socket,
   roomName,
   myProfile,
-  opponentProfile,
   initialSeed,
-  playersInfo,
+  allPlayers,
+  turnOrder,
   activeSocketId,
+  mode,
   onGameEnded,
 }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const myTank = TANKS[myProfile.tankId ?? DEFAULT_TANK_ID];
-  const oppTank = TANKS[opponentProfile.tankId ?? DEFAULT_TANK_ID];
-  const myWeapons = myTank.weapons;
+  // Build initial tank states
+  const buildInitialTanks = (): TankState[] => {
+    return allPlayers.map(p => {
+      const tankId = p.profile.tankId ?? DEFAULT_TANK_ID;
+      const tankDef = TANKS[tankId];
+      return {
+        socketId: p.socketId,
+        team: p.team,
+        x: p.x,
+        y: 0,
+        hp: tankDef.maxHp,
+        maxHp: tankDef.maxHp,
+        fuel: tankDef.maxFuel,
+        maxFuel: tankDef.maxFuel,
+        dir: p.team === "red" ? 1 : -1,
+        burn: null,
+        slowPending: 0,
+        slowThisTurn: 0,
+        launch: { active: false, vy: 0 },
+        dead: false,
+        tankId,
+        bodyColor: tankDef.bodyColor,
+        profile: p.profile,
+      };
+    });
+  };
 
-  // All mutable game state in a single ref to avoid stale closures
+  const mySocketId = socket.id ?? "";
+  const myTankDef = TANKS[myProfile.tankId ?? DEFAULT_TANK_ID];
+  const myWeapons = myTankDef.weapons;
+
   const G = useRef({
     terrain: [] as number[],
-    myX: playersInfo.find(p => p.socketId === socket.id)?.x ?? 150,
-    myY: 0,
-    myHp: myTank.maxHp,
-    myFuel: myTank.maxFuel,
-    myDir: 1,
-    oppX: playersInfo.find(p => p.socketId !== socket.id)?.x ?? 650,
-    oppY: 0,
-    oppHp: oppTank.maxHp,
-    oppDir: -1,
+    tanks: buildInitialTanks(),
     projectiles: [] as Projectile[],
     hazards: [] as Hazard[],
     particles: [] as Particle[],
-    myBurn: null as BurnState | null,
-    oppBurn: null as BurnState | null,
-    mySlowPending: 0,
-    mySlowThisTurn: 0,
-    oppSlowPending: 0,
-    oppSlowThisTurn: 0,
-    myLaunch: { active: false, vy: 0 },
-    oppLaunch: { active: false, vy: 0 },
-    isMyTurn: activeSocketId === socket.id,
+    turnOrder: turnOrder,
     activeSocketId: activeSocketId,
+    isMyTurn: activeSocketId === mySocketId,
     angle: 45,
     power: 50,
     weapon: myWeapons[0] as WeaponId,
@@ -131,43 +181,65 @@ export function GameCanvas({
     gameOver: false,
     turnTimer: 20,
     firedThisTurn: false,
-    railgunLastDmgTime: 0,  // 레일건 지속 데미지 타이머
+    railgunLastDmgTime: 0,
     minigunQueue: [] as Array<{
       remaining: number;
       sx: number; sy: number;
       ang: number; pwr: number;
-      owner: "me" | "opp";
+      ownerSocketId: string;
       lastSpawn: number;
     }>,
+    // Camera
+    camX: 0,
+    camTargetX: 0,
   });
 
-  // React UI state (only for display)
-  const [uiMyHp, setUiMyHp] = useState(myTank.maxHp);
-  const [uiOppHp, setUiOppHp] = useState(oppTank.maxHp);
-  const [uiMyFuel, setUiMyFuel] = useState(myTank.maxFuel);
+  // UI state
+  const myTank = () => G.current.tanks.find(t => t.socketId === mySocketId);
+  const [uiMyHp, setUiMyHp] = useState(myTankDef.maxHp);
+  const [uiMyFuel, setUiMyFuel] = useState(myTankDef.maxFuel);
   const [uiWeapon, setUiWeapon] = useState<WeaponId>(myWeapons[0]);
-  const [uiIsMyTurn, setUiIsMyTurn] = useState(activeSocketId === socket.id);
+  const [uiIsMyTurn, setUiIsMyTurn] = useState(activeSocketId === mySocketId);
   const [uiTimer, setUiTimer] = useState(20);
   const [uiAngle, setUiAngle] = useState(45);
   const [uiPower, setUiPower] = useState(50);
+  const [uiActiveName, setUiActiveName] = useState<string>(() => {
+    const ap = allPlayers.find(p => p.socketId === activeSocketId);
+    return ap?.profile.name ?? "";
+  });
+  const [uiTankHps, setUiTankHps] = useState<Record<string, number>>(() =>
+    Object.fromEntries(allPlayers.map(p => [p.socketId, TANKS[p.profile.tankId ?? DEFAULT_TANK_ID].maxHp]))
+  );
 
-  // ── Terrain generation (모래 지형) ───────────────────────────────────
+  // ── Terrain generation (확장 맵 2400px) ─────────────────────────────────
   useEffect(() => {
     const g = G.current;
     const terrain: number[] = [];
-    for (let x = 0; x < CANVAS_W; x++) {
+    for (let x = 0; x < WORLD_W; x++) {
       const h = 330
-        + Math.sin(x * 0.008 + initialSeed * 10) * 60
-        + Math.sin(x * 0.02 + initialSeed) * 20
-        + Math.cos(x * 0.003 - initialSeed) * 40;
+        + Math.sin(x * 0.008 + initialSeed * 10) * 70
+        + Math.sin(x * 0.02 + initialSeed) * 30
+        + Math.cos(x * 0.003 - initialSeed) * 50
+        + Math.sin(x * 0.005 + initialSeed * 3) * 25;
       terrain.push(Math.min(CANVAS_H - 20, Math.max(150, h)));
     }
     g.terrain = terrain;
-    g.myY = terrain[Math.round(g.myX)];
-    g.oppY = terrain[Math.round(g.oppX)];
+
+    // Place tanks on terrain
+    g.tanks.forEach(t => {
+      const rx = Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)));
+      t.y = terrain[rx] ?? CANVAS_H;
+    });
+
+    // Set camera to my tank's position initially
+    const me = g.tanks.find(t => t.socketId === mySocketId);
+    if (me) {
+      g.camX = Math.max(0, Math.min(WORLD_W - VIEW_W, me.x - VIEW_W / 2));
+      g.camTargetX = g.camX;
+    }
   }, [initialSeed]);
 
-  // ── Keyboard ─────────────────────────────────────────────────────────
+  // ── Keyboard ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const down = (e: KeyboardEvent) => { G.current.keys[e.code] = true; };
     const up = (e: KeyboardEvent) => { G.current.keys[e.code] = false; };
@@ -176,7 +248,7 @@ export function GameCanvas({
     return () => { window.removeEventListener("keydown", down); window.removeEventListener("keyup", up); };
   }, []);
 
-  // ── Turn timer ───────────────────────────────────────────────────────
+  // ── Turn timer ───────────────────────────────────────────────────────────
   useEffect(() => {
     const id = setInterval(() => {
       const g = G.current;
@@ -191,36 +263,49 @@ export function GameCanvas({
     return () => clearInterval(id);
   }, [socket, roomName]);
 
-  // ── Socket events ────────────────────────────────────────────────────
+  // ── Socket events ────────────────────────────────────────────────────────
   useEffect(() => {
     const onAction = (action: any) => {
       const g = G.current;
+      const tank = g.tanks.find(t => t.socketId === action.socketId);
+      if (!tank) return;
       if (action.type === "move") {
-        g.oppX = action.x;
-        g.oppDir = action.direction;
-        if (g.terrain.length) g.oppY = g.terrain[Math.round(g.oppX)];
+        tank.x = action.x;
+        tank.dir = action.direction;
+        if (g.terrain.length) tank.y = g.terrain[Math.round(Math.min(WORLD_W - 1, Math.max(0, tank.x)))];
       } else if (action.type === "fire") {
-        spawnProjectile(action.x, action.y, action.angle, action.power, action.weapon, "opp");
+        spawnProjectile(action.x, action.y, action.angle, action.power, action.weapon, action.socketId);
       }
     };
 
     const onNewTurn = ({ activeSocketId: asid }: { activeSocketId: string }) => {
       const g = G.current;
       g.activeSocketId = asid;
-      g.isMyTurn = asid === socket.id;
+      g.isMyTurn = asid === mySocketId;
       g.turnEndEmitted = false;
       g.firedThisTurn = false;
       g.turnTimer = 20;
       setUiIsMyTurn(g.isMyTurn);
       setUiTimer(20);
+
+      // Update active player name in UI
+      const activeTank = g.tanks.find(t => t.socketId === asid);
+      setUiActiveName(activeTank?.profile.name ?? "");
+
       if (g.isMyTurn) {
-        g.myFuel = myTank.maxFuel; setUiMyFuel(myTank.maxFuel);
-        g.mySlowThisTurn = g.mySlowPending;
-        g.mySlowPending = 0;
-      } else {
-        // 상대 턴 시작 시 oppSlow 적용
-        g.oppSlowThisTurn = g.oppSlowPending;
-        g.oppSlowPending = 0;
+        const me = g.tanks.find(t => t.socketId === mySocketId);
+        if (me) {
+          me.fuel = me.maxFuel;
+          setUiMyFuel(me.maxFuel);
+          me.slowThisTurn = me.slowPending;
+          me.slowPending = 0;
+        }
+      }
+
+      // Camera: move toward active tank
+      const nextActiveTank = g.tanks.find(t => t.socketId === asid);
+      if (nextActiveTank) {
+        g.camTargetX = Math.max(0, Math.min(WORLD_W - VIEW_W, nextActiveTank.x - VIEW_W / 2));
       }
     };
 
@@ -239,11 +324,11 @@ export function GameCanvas({
     };
   }, [socket, onGameEnded]);
 
-  // ── Helpers ──────────────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────────
   const destructTerrain = (cx: number, cy: number, radius: number) => {
     const t = G.current.terrain;
     const start = Math.max(0, Math.floor(cx - radius));
-    const end = Math.min(CANVAS_W - 1, Math.ceil(cx + radius));
+    const end = Math.min(WORLD_W - 1, Math.ceil(cx + radius));
     for (let x = start; x <= end; x++) {
       const dx = x - cx;
       if (Math.abs(dx) < radius) {
@@ -254,11 +339,10 @@ export function GameCanvas({
     }
   };
 
-  // 세계수가 지형으로 변할 때 땅을 융기시킴
   const growTerrainMound = (cx: number, baseY: number, radius: number) => {
     const t = G.current.terrain;
     const start = Math.max(0, Math.floor(cx - radius));
-    const end = Math.min(CANVAS_W - 1, Math.ceil(cx + radius));
+    const end = Math.min(WORLD_W - 1, Math.ceil(cx + radius));
     for (let x = start; x <= end; x++) {
       const dx = x - cx;
       if (Math.abs(dx) < radius) {
@@ -287,7 +371,7 @@ export function GameCanvas({
   const spawnProjectile = (
     sx: number, sy: number,
     ang: number, pwr: number,
-    wep: WeaponId, owner: "me" | "opp"
+    wep: WeaponId, ownerSocketId: string
   ) => {
     const def = WEAPON_DEFS[wep];
     const angRad = (ang * Math.PI) / 180;
@@ -295,37 +379,28 @@ export function GameCanvas({
     const g = G.current;
 
     if (def.isMinigun) {
-      // 미니건: 20발을 40ms 간격으로 연속발사 (burst)
-      g.minigunQueue.push({
-        remaining: 20,
-        sx, sy, ang, pwr, owner,
-        lastSpawn: 0,
-      });
+      g.minigunQueue.push({ remaining: 20, sx, sy, ang, pwr, ownerSocketId, lastSpawn: 0 });
       return;
     }
 
     if (def.isRailgun) {
-      // 레일건: 중력 없이 일직선, 도달 지점 미리 계산
       const railSpd = 20;
       let tx = sx, ty = sy - 12;
       const tvx = Math.cos(angRad) * railSpd;
       const tvy = -Math.sin(angRad) * railSpd;
-      for (let step = 0; step < 250; step++) {
+      for (let step = 0; step < 400; step++) {
         tx += tvx; ty += tvy;
         const rix = Math.round(tx);
-        if (tx < 0 || tx >= CANVAS_W || ty > CANVAS_H ||
-            (rix >= 0 && rix < CANVAS_W && ty >= g.terrain[rix])) break;
+        if (tx < 0 || tx >= WORLD_W || ty > CANVAS_H ||
+          (rix >= 0 && rix < WORLD_W && ty >= g.terrain[rix])) break;
       }
       g.projectiles.push({
         id: Math.random().toString(36).slice(2),
         x: sx, y: sy - 12,
         vx: tvx, vy: tvy,
-        type: wep, owner,
-        railgunPhase: "beam",
-        railgunAge: 0,
-        railgunWidth: 0.5,
-        railgunTargetX: tx,
-        railgunTargetY: ty,
+        type: wep, ownerSocketId,
+        railgunPhase: "beam", railgunAge: 0, railgunWidth: 0.5,
+        railgunTargetX: tx, railgunTargetY: ty,
       });
       return;
     }
@@ -335,45 +410,56 @@ export function GameCanvas({
       x: sx, y: sy - 12,
       vx: Math.cos(angRad) * spd,
       vy: -Math.sin(angRad) * spd,
-      type: wep, owner,
+      type: wep, ownerSocketId,
     };
     if (def.splitCount) { proj.splitTimer = def.splitDelay ?? 45; proj.isSplit = false; }
     g.projectiles.push(proj);
   };
 
-
-  const igniteTank = (isMe: boolean) => {
+  const igniteTank = (socketId: string) => {
     const g = G.current;
-    if (isMe) {
-      if (!g.myBurn) g.myBurn = { ticksLeft: BURN_TICKS, lastTick: Date.now() };
-      else g.myBurn.ticksLeft = BURN_TICKS;
-    } else {
-      if (!g.oppBurn) g.oppBurn = { ticksLeft: BURN_TICKS, lastTick: Date.now() };
-      else g.oppBurn.ticksLeft = BURN_TICKS;
-    }
+    const tank = g.tanks.find(t => t.socketId === socketId);
+    if (!tank) return;
+    if (!tank.burn) tank.burn = { ticksLeft: BURN_TICKS, lastTick: Date.now() };
+    else tank.burn.ticksLeft = BURN_TICKS;
   };
 
-  const applyHpDamage = (isMe: boolean, dmg: number) => {
+  const applyHpDamage = (socketId: string, dmg: number) => {
     const g = G.current;
     if (dmg <= 0) return;
-    if (isMe) {
-      const newHp = Math.max(0, g.myHp - dmg);
-      g.myHp = newHp; setUiMyHp(newHp);
-      if (newHp <= 0 && !g.gameOver) {
-        g.gameOver = true;
-        socket.emit("report-game-end", { roomName, reason: "defeat" });
+    const tank = g.tanks.find(t => t.socketId === socketId);
+    if (!tank || tank.dead) return;
+    const newHp = Math.max(0, tank.hp - dmg);
+    tank.hp = newHp;
+
+    // Update UI hp map
+    setUiTankHps(prev => ({ ...prev, [socketId]: newHp }));
+    if (socketId === mySocketId) setUiMyHp(newHp);
+
+    if (newHp <= 0 && !tank.dead) {
+      tank.dead = true;
+      spawnParticles(tank.x, tank.y, 40, 6, ["#ef4444", "#f97316", "#fbbf24", "#fff"]);
+
+      // Only the client whose tank died reports the death (or any client who knows)
+      // Use the first alive player on myTeam or just always report from this client
+      if (socketId === mySocketId) {
+        socket.emit("report-player-dead", { roomName, deadSocketId: socketId });
+      } else {
+        // Let server know via game-action relay: only the player who shot informs server
+        // We broadcast report from the client who sees the kill — use first local kill detection
+        socket.emit("report-player-dead", { roomName, deadSocketId: socketId });
       }
-    } else {
-      const newHp = Math.max(0, g.oppHp - dmg);
-      g.oppHp = newHp; setUiOppHp(newHp);
-      if (newHp <= 0 && !g.gameOver) {
+
+      // Check game over locally
+      const redAlive = g.tanks.filter(t => t.team === "red" && !t.dead).length;
+      const blueAlive = g.tanks.filter(t => t.team === "blue" && !t.dead).length;
+      if (redAlive === 0 || blueAlive === 0) {
+        // Server will handle the actual game-ended event via report-player-dead
         g.gameOver = true;
-        socket.emit("report-game-end", { roomName, reason: "victory" });
       }
     }
   };
 
-  // 폭발 지점 중심의 범위 피해 (자신도 범위 안에 있으면 피해를 입음)
   const explodeAt = (ex: number, ey: number, wep: WeaponId, isSplit: boolean) => {
     const g = G.current;
     const def = WEAPON_DEFS[wep];
@@ -386,31 +472,29 @@ export function GameCanvas({
     destructTerrain(ex, ey, destructRadius);
     spawnParticles(ex, ey, particleCount, 4, palette);
 
-    const applyToTank = (tx: number, ty: number, isMe: boolean) => {
-      const dist = Math.hypot(tx - ex, ty - ey);
+    g.tanks.forEach(tank => {
+      if (tank.dead) return;
+      const dist = Math.hypot(tank.x - ex, tank.y - ey);
       if (dist < radius) {
         const dmg = Math.round(maxDmg * (1 - dist / radius));
-        applyHpDamage(isMe, dmg);
-        if (def.incendiary) igniteTank(isMe);
-        if (def.flowerEffect && isMe) {
-          const delta = Math.random() * 34 - 17; // -17 ~ 17
-          const newAngle = Math.max(0, Math.min(180, Math.round(g.angle + delta)));
-          g.angle = newAngle;
+        applyHpDamage(tank.socketId, dmg);
+        if (def.incendiary) igniteTank(tank.socketId);
+        if (def.flowerEffect && tank.socketId === mySocketId) {
+          const delta = Math.random() * 34 - 17;
+          const newAngle = Math.max(0, Math.min(180, Math.round(G.current.angle + delta)));
+          G.current.angle = newAngle;
           setUiAngle(newAngle);
         }
       }
-    };
-
-    applyToTank(g.myX, g.myY, true);
-    applyToTank(g.oppX, g.oppY, false);
+    });
   };
 
   const handleExplosion = (p: Projectile) => {
-    if (p.x < 0 || p.x >= CANVAS_W) return;
+    if (p.x < 0 || p.x >= WORLD_W) return;
     explodeAt(p.x, p.y, p.type, !!p.isSplit);
   };
 
-  // ── Main Canvas Loop ─────────────────────────────────────────────────
+  // ── Main Canvas Loop ─────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -424,157 +508,147 @@ export function GameCanvas({
       const g = G.current;
       if (g.terrain.length === 0) { raf = requestAnimationFrame(loop); return; }
 
-      // ─ Movement ─
-      if (g.isMyTurn && g.myFuel > 0 && g.projectiles.length === 0 && !g.firedThisTurn && !g.gameOver) {
+      const me = g.tanks.find(t => t.socketId === mySocketId);
+
+      // ─ Camera smooth follow ─
+      // Follow active tank or fired projectile
+      const activeTank = g.tanks.find(t => t.socketId === g.activeSocketId && !t.dead);
+      let targetCamX = g.camTargetX;
+      if (g.projectiles.length > 0) {
+        const firstProj = g.projectiles[0];
+        targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, firstProj.x - VIEW_W / 2));
+      } else if (activeTank) {
+        targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, activeTank.x - VIEW_W / 2));
+      }
+      g.camTargetX = targetCamX;
+      g.camX += (g.camTargetX - g.camX) * 0.08;
+
+      const camOffset = g.camX;
+
+      // ─ Movement (my tank) ─
+      if (g.isMyTurn && me && !me.dead && me.fuel > 0 && g.projectiles.length === 0 && !g.firedThisTurn && !g.gameOver) {
         const now = Date.now();
         const dt = (now - lastFuelUpdate) / 1000;
         let moved = false;
-        // 경사각(Slope) 계산: 이동하려는 방향의 지형 높이 차이 분석
-        const currX = Math.round(g.myX);
+        const currX = Math.round(me.x);
         const y0 = g.terrain[currX] ?? 0;
         let speedMultiplier = 1;
 
         if (g.keys["KeyA"] || g.keys["KeyD"]) {
           const targetDir = g.keys["KeyA"] ? -1 : 1;
-          const nextX = Math.min(CANVAS_W - 1, Math.max(0, currX + targetDir * 3));
+          const nextX = Math.min(WORLD_W - 1, Math.max(0, currX + targetDir * 3));
           const y1 = g.terrain[nextX] ?? y0;
-          const dy = y0 - y1; // dy > 0 이면 오르막길
+          const dy = y0 - y1;
           if (dy > 0) {
-            const slopeAngleRad = Math.atan2(dy, 3);
-            const slopeAngleDeg = (slopeAngleRad * 180) / Math.PI;
-            if (slopeAngleDeg >= 80) {
-              speedMultiplier = 0.5; // 80도 이상의 벽을 탈 때 속도 50% 감쇼
-            }
+            const slopeAngleDeg = (Math.atan2(dy, 3) * 180) / Math.PI;
+            if (slopeAngleDeg >= 80) speedMultiplier = 0.5;
           }
         }
 
-        const slowMultiplier = Math.max(0.15, 1 - 0.15 * g.mySlowThisTurn);
+        const slowMultiplier = Math.max(0.15, 1 - 0.15 * me.slowThisTurn);
         const moveSpeed = 1.5 * slowMultiplier * speedMultiplier;
 
-        if (g.keys["KeyA"]) {
-          g.myX = Math.max(10, g.myX - moveSpeed);
-          g.myDir = -1;
-          moved = true;
-        } else if (g.keys["KeyD"]) {
-          g.myX = Math.min(CANVAS_W - 10, g.myX + moveSpeed);
-          g.myDir = 1;
-          moved = true;
-        }
+        if (g.keys["KeyA"]) { me.x = Math.max(10, me.x - moveSpeed); me.dir = -1; moved = true; }
+        else if (g.keys["KeyD"]) { me.x = Math.min(WORLD_W - 10, me.x + moveSpeed); me.dir = 1; moved = true; }
 
         if (moved) {
-          g.myFuel = Math.max(0, g.myFuel - 30 * dt);
+          me.fuel = Math.max(0, me.fuel - 30 * dt);
           lastFuelUpdate = now;
-          setUiMyFuel(Math.round(g.myFuel));
-          socket.emit("game-action", { roomName, action: { type: "move", x: g.myX, direction: g.myDir } });
+          setUiMyFuel(Math.round(me.fuel));
+          socket.emit("game-action", { roomName, action: { type: "move", x: me.x, direction: me.dir, socketId: mySocketId } });
+        } else { lastFuelUpdate = now; }
+      }
+
+      // ─ Gravity: snap tanks to terrain ─
+      g.tanks.forEach(t => {
+        if (t.dead) return;
+        if (t.launch.active) {
+          t.y += t.launch.vy;
+          t.launch.vy += GRAVITY * 0.6;
+          const groundY = g.terrain[Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)))];
+          if (groundY !== undefined && t.y >= groundY) { t.y = groundY; t.launch.active = false; }
         } else {
-          lastFuelUpdate = now;
+          const rx = Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)));
+          if (g.terrain[rx] !== undefined) t.y = g.terrain[rx];
         }
-      }
+      });
 
-      // ─ Gravity: snap tanks to terrain (세계수에 맞아 튕겨나간 경우는 예외) ─
-      if (g.myLaunch.active) {
-        g.myY += g.myLaunch.vy;
-        g.myLaunch.vy += GRAVITY * 0.6;
-        const groundY = g.terrain[Math.round(g.myX)];
-        if (groundY !== undefined && g.myY >= groundY) { g.myY = groundY; g.myLaunch.active = false; }
-      } else if (g.terrain[Math.round(g.myX)] !== undefined) {
-        g.myY = g.terrain[Math.round(g.myX)];
-      }
-      if (g.oppLaunch.active) {
-        g.oppY += g.oppLaunch.vy;
-        g.oppLaunch.vy += GRAVITY * 0.6;
-        const groundYO = g.terrain[Math.round(g.oppX)];
-        if (groundYO !== undefined && g.oppY >= groundYO) { g.oppY = groundYO; g.oppLaunch.active = false; }
-      } else if (g.terrain[Math.round(g.oppX)] !== undefined) {
-        g.oppY = g.terrain[Math.round(g.oppX)];
-      }
-
-      // ─ Burn (화상) DOT 처리 ─
+      // ─ Burn DOT ─
       const now2 = Date.now();
-      if (g.myBurn && now2 - g.myBurn.lastTick >= 1000) {
-        applyHpDamage(true, BURN_DMG_PER_TICK);
-        g.myBurn.ticksLeft -= 1;
-        g.myBurn.lastTick = now2;
-        if (g.myBurn.ticksLeft <= 0) g.myBurn = null;
-      }
-      if (g.oppBurn && now2 - g.oppBurn.lastTick >= 1000) {
-        applyHpDamage(false, BURN_DMG_PER_TICK);
-        g.oppBurn.ticksLeft -= 1;
-        g.oppBurn.lastTick = now2;
-        if (g.oppBurn.ticksLeft <= 0) g.oppBurn = null;
-      }
+      g.tanks.forEach(t => {
+        if (!t.burn || t.dead) return;
+        if (now2 - t.burn.lastTick >= 1000) {
+          applyHpDamage(t.socketId, BURN_DMG_PER_TICK);
+          t.burn.ticksLeft -= 1;
+          t.burn.lastTick = now2;
+          if (t.burn.ticksLeft <= 0) t.burn = null;
+        }
+      });
 
-      // ─ 설치물(지뢰/덩쿨/세계수) 판정 ─
+      // ─ Hazards ─
       if (g.hazards.length > 0) {
         const now3 = Date.now();
         const hzToRemove = new Set<number>();
         g.hazards.forEach((h, idx) => {
-          const hitMe = Math.abs(g.myX - h.x) < MINE_TRIGGER_RADIUS;
-          const hitOpp = Math.abs(g.oppX - h.x) < MINE_TRIGGER_RADIUS;
-          const treeHitMe = Math.abs(g.myX - h.x) < TREE_TRIGGER_RADIUS;
-          const treeHitOpp = Math.abs(g.oppX - h.x) < TREE_TRIGGER_RADIUS;
+          if (!h.lastTriggerMap) h.lastTriggerMap = {};
 
-          if (h.kind === "mine") {
-            if (hitMe || hitOpp) { explodeAt(h.x, h.y, "mine", false); hzToRemove.add(idx); }
-          } else if (h.kind === "vine") {
-            if (hitMe || hitOpp) { explodeAt(h.x, h.y, "vine", true); }
-            if (hitMe) { g.mySlowPending += 1; spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
-            else if (hitOpp) { g.oppSlowPending += 1; spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]); hzToRemove.add(idx); }
-          } else if (h.kind === "tree") {
-            if (treeHitMe && !g.myLaunch.active && (!h.lastTriggerMe || now3 - h.lastTriggerMe > TREE_TRIGGER_COOLDOWN_MS)) {
-              g.myLaunch = { active: true, vy: TREE_BOUNCE_VY };
-              if (!h.lastTriggerMe) {
-                applyHpDamage(true, WEAPON_DEFS.tree.maxDmg);
+          g.tanks.forEach(tank => {
+            if (tank.dead) return;
+            const hitDist = Math.abs(tank.x - h.x);
+            const hitMe = hitDist < MINE_TRIGGER_RADIUS;
+            const treeHit = hitDist < TREE_TRIGGER_RADIUS;
+
+            if (h.kind === "mine") {
+              if (hitMe) { explodeAt(h.x, h.y, "mine", false); hzToRemove.add(idx); }
+            } else if (h.kind === "vine") {
+              if (hitMe) {
+                explodeAt(h.x, h.y, "vine", true);
+                tank.slowPending += 1;
+                spawnParticles(h.x, h.y, 10, 2, ["#65a30d", "#a3e635"]);
+                hzToRemove.add(idx);
               }
-              spawnParticles(h.x, h.y, 10, 3, ["#16a34a", "#4ade80"]);
-              h.lastTriggerMe = now3;
-            }
-            if (treeHitOpp && !g.oppLaunch.active && (!h.lastTriggerOpp || now3 - h.lastTriggerOpp > TREE_TRIGGER_COOLDOWN_MS)) {
-              g.oppLaunch = { active: true, vy: TREE_BOUNCE_VY };
-              if (!h.lastTriggerOpp) {
-                applyHpDamage(false, WEAPON_DEFS.tree.maxDmg);
+            } else if (h.kind === "tree") {
+              const lastTrig = h.lastTriggerMap![tank.socketId] ?? 0;
+              if (treeHit && !tank.launch.active && (now3 - lastTrig > TREE_TRIGGER_COOLDOWN_MS)) {
+                tank.launch = { active: true, vy: TREE_BOUNCE_VY };
+                if (!lastTrig) applyHpDamage(tank.socketId, WEAPON_DEFS.tree.maxDmg);
+                spawnParticles(h.x, h.y, 10, 3, ["#16a34a", "#4ade80"]);
+                h.lastTriggerMap![tank.socketId] = now3;
               }
-              spawnParticles(h.x, h.y, 10, 3, ["#16a34a", "#4ade80"]);
-              h.lastTriggerOpp = now3;
             }
-            if (now3 - h.plantedAt > TREE_CONVERT_MS) {
-              growTerrainMound(h.x, h.y, TREE_MOUND_RADIUS);
-              hzToRemove.add(idx);
-            }
-          } else if (h.kind === "emp") {
-            // EMP 진동 -> 폭발 로직
+          });
+
+          if (h.kind === "tree" && now3 - h.plantedAt > TREE_CONVERT_MS) {
+            growTerrainMound(h.x, h.y, TREE_MOUND_RADIUS);
+            hzToRemove.add(idx);
+          }
+
+          if (h.kind === "emp") {
             const age = now3 - h.plantedAt;
             if (!h.empPhase) h.empPhase = "vibrate";
+            if (!h.empLastDamageSet) h.empLastDamageSet = new Set();
             if (h.empPhase === "vibrate") {
               h.empRadius = 18 + Math.sin(age * 0.025) * 5 + (age / EMP_VIBRATE_MS) * 8;
-              if (age >= EMP_VIBRATE_MS) {
-                h.empPhase = "explode";
-                h.empExplodeAt = now3;
-              }
+              if (age >= EMP_VIBRATE_MS) { h.empPhase = "explode"; h.empExplodeAt = now3; }
             } else if (h.empPhase === "explode") {
               const explodeAge = now3 - (h.empExplodeAt ?? now3);
               const progress = Math.min(1, explodeAge / 600);
               const blastRadius = EMP_EXPLODE_RADIUS * progress;
-              if (!h.empLastDamageMe && Math.hypot(g.myX - h.x, g.myY - h.y) < blastRadius + 20) {
-                applyHpDamage(true, WEAPON_DEFS.emp.maxDmg);
-                g.mySlowPending += 3;
-                h.empLastDamageMe = now3;
-                spawnParticles(h.x, h.y, 20, 4, ["#facc15", "#38bdf8", "#fff", "#bae6fd"]);
-              }
-              if (!h.empLastDamageOpp && Math.hypot(g.oppX - h.x, g.oppY - h.y) < blastRadius + 20) {
-                applyHpDamage(false, WEAPON_DEFS.emp.maxDmg);
-                g.oppSlowPending += 3;
-                h.empLastDamageOpp = now3;
-                spawnParticles(h.x, h.y, 20, 4, ["#facc15", "#38bdf8", "#fff", "#bae6fd"]);
-              }
+              g.tanks.forEach(tank => {
+                if (tank.dead || h.empLastDamageSet!.has(tank.socketId)) return;
+                if (Math.hypot(tank.x - h.x, tank.y - h.y) < blastRadius + 20) {
+                  applyHpDamage(tank.socketId, WEAPON_DEFS.emp.maxDmg);
+                  tank.slowPending += 3;
+                  h.empLastDamageSet!.add(tank.socketId);
+                  spawnParticles(h.x, h.y, 20, 4, ["#facc15", "#38bdf8", "#fff", "#bae6fd"]);
+                }
+              });
               destructTerrain(h.x, h.y, blastRadius * 0.7);
               if (progress >= 1) hzToRemove.add(idx);
             }
           }
         });
-        if (hzToRemove.size) {
-          g.hazards = g.hazards.filter((_, idx) => !hzToRemove.has(idx));
-        }
+        if (hzToRemove.size) g.hazards = g.hazards.filter((_, idx) => !hzToRemove.has(idx));
       }
 
       // ─ Projectile physics ─
@@ -583,40 +657,27 @@ export function GameCanvas({
         const p = g.projectiles[i];
         const def = WEAPON_DEFS[p.type];
 
-        // 레일건: 위치 이동 없이 phase 진행만
         if (def.isRailgun) {
           p.railgunAge = (p.railgunAge ?? 0) + 1;
           if (p.railgunPhase === "beam" && p.railgunAge >= RAILGUN_BEAM_FRAMES) {
-            p.railgunPhase = "growing";
-            p.railgunAge = 0;
+            p.railgunPhase = "growing"; p.railgunAge = 0;
           } else if (p.railgunPhase === "growing") {
-            const growProgress = Math.min(1, p.railgunAge / RAILGUN_GROW_FRAMES);
-            p.railgunWidth = 0.5 + growProgress * 8;
-            // 지속 데미지
+            p.railgunWidth = 0.5 + Math.min(1, p.railgunAge / RAILGUN_GROW_FRAMES) * 8;
             const now4 = Date.now();
             if (now4 - g.railgunLastDmgTime > RAILGUN_DMG_INTERVAL) {
               g.railgunLastDmgTime = now4;
-              // 레일건 선 위에 피격 대상 탱크가 있으면 데미지 (자신은 절대 맞지 않음)
-              const sx0 = p.x + p.vx * 1.5, sy0 = p.y + p.vy * 1.5; // 탱크 포신 끝보다 앞에서 시작
+              const sx0 = p.x + p.vx * 1.5, sy0 = p.y + p.vy * 1.5;
               const tx0 = p.railgunTargetX ?? p.x, ty0 = p.railgunTargetY ?? p.y;
               const len = Math.hypot(tx0 - sx0, ty0 - sy0);
-              
-              const checkTank = (tx: number, ty: number, targetIsMe: boolean) => {
+              g.tanks.forEach(tank => {
+                if (tank.dead || tank.socketId === p.ownerSocketId) return;
                 if (len <= 0) return;
-                // 내가 쏜 레이저는 나(me)에게 피해를 주지 않음 / 상대가 쏜 레이저는 상대(opp)에게 피해를 주지 않음
-                if (p.owner === "me" && targetIsMe) return;
-                if (p.owner === "opp" && !targetIsMe) return;
-
-                const t = ((tx - sx0) * (tx0 - sx0) + (ty - sy0) * (ty0 - sy0)) / (len * len);
+                const t = ((tank.x - sx0) * (tx0 - sx0) + (tank.y - sy0) * (ty0 - sy0)) / (len * len);
                 const clampT = Math.max(0, Math.min(1, t));
                 const cx = sx0 + clampT * (tx0 - sx0);
                 const cy = sy0 + clampT * (ty0 - sy0);
-                if (Math.hypot(tx - cx, ty - cy) < 18) {
-                  applyHpDamage(targetIsMe, WEAPON_DEFS.railgun.maxDmg);
-                }
-              };
-              checkTank(g.myX, g.myY, true);
-              checkTank(g.oppX, g.oppY, false);
+                if (Math.hypot(tank.x - cx, tank.y - cy) < 18) applyHpDamage(tank.socketId, WEAPON_DEFS.railgun.maxDmg);
+              });
             }
             if (p.railgunAge >= RAILGUN_GROW_FRAMES) {
               toRemove.push(i);
@@ -626,16 +687,14 @@ export function GameCanvas({
           continue;
         }
 
-        // 미니건: 중력 감소 적용
         p.x += p.vx; p.y += p.vy;
         if (!p.isMinigunBullet) p.vy += GRAVITY; else p.vy += GRAVITY * 0.15;
 
-        // Sniper drills terrain in-flight
-        if (p.type === "sniper" && p.x >= 0 && p.x < CANVAS_W) {
-          if (p.y >= g.terrain[Math.round(p.x)]) destructTerrain(p.x, p.y, 7);
+        if (p.type === "sniper" && p.x >= 0 && p.x < WORLD_W) {
+          const rix = Math.round(p.x);
+          if (rix >= 0 && rix < WORLD_W && p.y >= g.terrain[rix]) destructTerrain(p.x, p.y, 7);
         }
 
-        // 분열탄 계열 분열 처리 (집속탄/샷건 집속탄/소이탄)
         if (def.splitCount && !p.isSplit && p.splitTimer !== undefined) {
           p.splitTimer--;
           if (p.splitTimer <= 0) {
@@ -648,23 +707,13 @@ export function GameCanvas({
               for (let j = 0; j < count; j++) {
                 const t = count > 1 ? j / (count - 1) - 0.5 : 0;
                 const ang = baseAngle + t * totalRad;
-                g.projectiles.push({
-                  id: Math.random().toString(36).slice(2),
-                  x: p.x, y: p.y,
-                  vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
-                  type: p.type, isSplit: true, owner: p.owner,
-                });
+                g.projectiles.push({ id: Math.random().toString(36).slice(2), x: p.x, y: p.y, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed, type: p.type, isSplit: true, ownerSocketId: p.ownerSocketId });
               }
             } else {
               const spread = def.spreadFactor ?? 1.7;
               for (let j = 0; j < count; j++) {
                 const offset = j - (count - 1) / 2;
-                g.projectiles.push({
-                  id: Math.random().toString(36).slice(2),
-                  x: p.x, y: p.y,
-                  vx: p.vx + offset * spread, vy: p.vy - 1,
-                  type: p.type, isSplit: true, owner: p.owner,
-                });
+                g.projectiles.push({ id: Math.random().toString(36).slice(2), x: p.x, y: p.y, vx: p.vx + offset * spread, vy: p.vy - 1, type: p.type, isSplit: true, ownerSocketId: p.ownerSocketId });
               }
             }
             spawnParticles(p.x, p.y, 8, 2);
@@ -673,52 +722,35 @@ export function GameCanvas({
           }
         }
 
-        const outOfBounds = p.x < 0 || p.x >= CANVAS_W || p.y > CANVAS_H;
-        const hitTerrain = p.x >= 0 && p.x < CANVAS_W && p.y >= g.terrain[Math.round(p.x)];
+        const outOfBounds = p.x < 0 || p.x >= WORLD_W || p.y > CANVAS_H;
+        const rix = Math.round(p.x);
+        const hitTerrain = p.x >= 0 && p.x < WORLD_W && p.y >= g.terrain[Math.max(0, Math.min(WORLD_W - 1, rix))];
 
-        // 미니건: 공중 비행 중에도 탱크 피격 체크 (히트박스 24px) + 지형 착탄시 소량 지형 파괴
         if (p.isMinigunBullet) {
-          const hitMe = Math.hypot(g.myX - p.x, g.myY - p.y) < 24;
-          const hitOpp = Math.hypot(g.oppX - p.x, g.oppY - p.y) < 24;
-          
-          if (hitMe && p.owner !== "me") {
-            applyHpDamage(true, 1);
-            spawnParticles(p.x, p.y, 4, 2, ["#cbd5e1", "#fff"]);
-            toRemove.push(i);
-            continue;
+          let hitAnyone = false;
+          for (const tank of g.tanks) {
+            if (tank.dead || tank.socketId === p.ownerSocketId) continue;
+            if (Math.hypot(tank.x - p.x, tank.y - p.y) < 24) {
+              applyHpDamage(tank.socketId, 1);
+              spawnParticles(p.x, p.y, 4, 2, ["#cbd5e1", "#fff"]);
+              toRemove.push(i); hitAnyone = true; break;
+            }
           }
-          if (hitOpp && p.owner !== "opp") {
-            applyHpDamage(false, 1);
-            spawnParticles(p.x, p.y, 4, 2, ["#cbd5e1", "#fff"]);
-            toRemove.push(i);
-            continue;
-          }
-
+          if (hitAnyone) continue;
           if (outOfBounds || hitTerrain) {
             if (hitTerrain) destructTerrain(p.x, p.y, 5);
-            toRemove.push(i);
-            continue;
+            toRemove.push(i); continue;
           }
         }
 
         if (outOfBounds || hitTerrain) {
           if (def.groundEffect) {
-            // 지뢰/덩쿨/세계수/EMP는 착탄시 즉시 터지지 않고 설치됨
             if (hitTerrain) {
-              const hazard: Hazard = {
-                id: Math.random().toString(36).slice(2),
-                x: p.x, y: g.terrain[Math.round(p.x)],
-                kind: def.groundEffect, plantedAt: Date.now(),
-              };
-              if (def.groundEffect === "emp") {
-                hazard.empPhase = "vibrate";
-                hazard.empRadius = 18;
-              }
+              const rx2 = Math.max(0, Math.min(WORLD_W - 1, rix));
+              const hazard: Hazard = { id: Math.random().toString(36).slice(2), x: p.x, y: g.terrain[rx2], kind: def.groundEffect, plantedAt: Date.now() };
+              if (def.groundEffect === "emp") { hazard.empPhase = "vibrate"; hazard.empRadius = 18; }
               g.hazards.push(hazard);
-              const palette = def.groundEffect === "vine" ? ["#65a30d", "#a3e635"]
-                : def.groundEffect === "tree" ? ["#16a34a", "#4ade80", "#166534"]
-                : def.groundEffect === "emp" ? ["#facc15", "#38bdf8", "#fff"]
-                : undefined;
+              const palette = def.groundEffect === "vine" ? ["#65a30d", "#a3e635"] : def.groundEffect === "tree" ? ["#16a34a", "#4ade80", "#166534"] : def.groundEffect === "emp" ? ["#facc15", "#38bdf8", "#fff"] : undefined;
               spawnParticles(p.x, p.y, 6, 2, palette);
             }
           } else {
@@ -729,32 +761,23 @@ export function GameCanvas({
       }
       toRemove.forEach(i => g.projectiles.splice(i, 1));
 
-      // ─ Minigun 연속 발사 (burst) 큐 처리 ─
+      // ─ Minigun burst queue ─
       if (g.minigunQueue.length > 0) {
         const nowM = Date.now();
         for (let q = g.minigunQueue.length - 1; q >= 0; q--) {
           const item = g.minigunQueue[q];
-          if (nowM - item.lastSpawn >= 45) { // 45ms 간격으로 1발씩 연사
-            item.lastSpawn = nowM;
-            item.remaining--;
+          if (nowM - item.lastSpawn >= 45) {
+            item.lastSpawn = nowM; item.remaining--;
             const angRad = (item.ang * Math.PI) / 180;
             const bulletSpd = 15;
             const jitter = (Math.random() - 0.5) * 0.04;
-            g.projectiles.push({
-              id: Math.random().toString(36).slice(2),
-              x: item.sx, y: item.sy - 12,
-              vx: Math.cos(angRad + jitter) * (bulletSpd + Math.random()),
-              vy: -Math.sin(angRad + jitter) * (bulletSpd + Math.random()),
-              type: "minigun", owner: item.owner, isMinigunBullet: true,
-            });
-            if (item.remaining <= 0) {
-              g.minigunQueue.splice(q, 1);
-            }
+            g.projectiles.push({ id: Math.random().toString(36).slice(2), x: item.sx, y: item.sy - 12, vx: Math.cos(angRad + jitter) * (bulletSpd + Math.random()), vy: -Math.sin(angRad + jitter) * (bulletSpd + Math.random()), type: "minigun", ownerSocketId: item.ownerSocketId, isMinigunBullet: true });
+            if (item.remaining <= 0) g.minigunQueue.splice(q, 1);
           }
         }
       }
 
-      // When all projectiles land, minigun burst ends, and active EMP hazards finish exploding → end turn
+      // Auto end turn
       const hasActiveEmp = g.hazards.some(h => h.kind === "emp" && h.empPhase !== "done");
       if (g.projectiles.length === 0 && g.minigunQueue.length === 0 && !hasActiveEmp && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
         g.turnEndEmitted = true;
@@ -769,17 +792,20 @@ export function GameCanvas({
       }
 
       // ─ Render ─
-      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      ctx.clearRect(0, 0, VIEW_W, VIEW_H);
+      ctx.save();
+      ctx.translate(-camOffset, 0);
 
-      // Sky (사막/모래 느낌의 노을 하늘)
-      const sky = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+      // Sky
+      const sky = ctx.createLinearGradient(camOffset, 0, camOffset, CANVAS_H);
       sky.addColorStop(0, "#fde9c8");
       sky.addColorStop(0.45, "#f6c88f");
       sky.addColorStop(1, "#e0a458");
-      ctx.fillStyle = sky; ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+      ctx.fillStyle = sky;
+      ctx.fillRect(camOffset, 0, VIEW_W, CANVAS_H);
 
-      // 태양
-      const sunX = (CANVAS_W * 0.78);
+      // Sun
+      const sunX = camOffset + VIEW_W * 0.78;
       const sunY = 90;
       const sunGrad = ctx.createRadialGradient(sunX, sunY, 5, sunX, sunY, 70);
       sunGrad.addColorStop(0, "rgba(255,247,214,0.95)");
@@ -789,48 +815,48 @@ export function GameCanvas({
       ctx.beginPath(); ctx.arc(sunX, sunY, 26, 0, Math.PI * 2);
       ctx.fillStyle = "#fff3d6"; ctx.fill();
 
-      // 멀리 있는 모래 언덕 실루엣
-      ctx.beginPath(); ctx.moveTo(0, CANVAS_H);
-      for (let x = 0; x <= CANVAS_W; x += 20) {
+      // Background dunes
+      ctx.beginPath(); ctx.moveTo(camOffset, CANVAS_H);
+      for (let x = Math.floor(camOffset); x <= camOffset + VIEW_W + 20; x += 20) {
         const dy = 260 + Math.sin(x * 0.01 + initialSeed * 5) * 18;
         ctx.lineTo(x, dy);
       }
-      ctx.lineTo(CANVAS_W, CANVAS_H); ctx.closePath();
+      ctx.lineTo(camOffset + VIEW_W, CANVAS_H); ctx.closePath();
       ctx.fillStyle = "rgba(196,140,84,0.35)"; ctx.fill();
 
-      // Terrain fill (모래 지형)
-      ctx.beginPath(); ctx.moveTo(0, CANVAS_H);
-      for (let x = 0; x < CANVAS_W; x++) ctx.lineTo(x, g.terrain[x]);
-      ctx.lineTo(CANVAS_W, CANVAS_H); ctx.closePath();
+      // Terrain fill
+      ctx.beginPath(); ctx.moveTo(camOffset, CANVAS_H);
+      for (let x = Math.max(0, Math.floor(camOffset)); x <= Math.min(WORLD_W - 1, Math.ceil(camOffset + VIEW_W)); x++) {
+        ctx.lineTo(x, g.terrain[x]);
+      }
+      ctx.lineTo(Math.min(WORLD_W - 1, camOffset + VIEW_W), CANVAS_H); ctx.closePath();
       const tGrad = ctx.createLinearGradient(0, 150, 0, CANVAS_H);
       tGrad.addColorStop(0, "#e8c48a");
       tGrad.addColorStop(0.35, "#c9975c");
       tGrad.addColorStop(1, "#8a6238");
       ctx.fillStyle = tGrad; ctx.fill();
 
-      // Terrain top glow (모래 능선)
-      ctx.beginPath(); ctx.moveTo(0, g.terrain[0]);
-      for (let x = 1; x < CANVAS_W; x++) ctx.lineTo(x, g.terrain[x]);
+      // Terrain ridge
+      ctx.beginPath();
+      for (let x = Math.max(0, Math.floor(camOffset)); x <= Math.min(WORLD_W - 1, Math.ceil(camOffset + VIEW_W)); x++) {
+        if (x === Math.max(0, Math.floor(camOffset))) ctx.moveTo(x, g.terrain[x]);
+        else ctx.lineTo(x, g.terrain[x]);
+      }
       ctx.strokeStyle = "#f2d9a8"; ctx.lineWidth = 2.5; ctx.stroke();
 
-      // 설치물(지뢰/덩쿨/세계수) 표시
+      // Hazards
       g.hazards.forEach(h => {
+        if (h.x < camOffset - 60 || h.x > camOffset + VIEW_W + 60) return;
         ctx.save();
         ctx.translate(h.x, h.y - 3);
         if (h.kind === "mine") {
-          ctx.beginPath();
-          ctx.moveTo(0, -7); ctx.lineTo(7, 0); ctx.lineTo(0, 7); ctx.lineTo(-7, 0);
-          ctx.closePath();
+          ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(7, 0); ctx.lineTo(0, 7); ctx.lineTo(-7, 0); ctx.closePath();
           ctx.fillStyle = "#4d7c0f"; ctx.fill();
           ctx.strokeStyle = "#bef264"; ctx.lineWidth = 1.5; ctx.stroke();
-          ctx.beginPath(); ctx.arc(0, 0, 2, 0, Math.PI * 2);
-          ctx.fillStyle = "#facc15"; ctx.fill();
+          ctx.beginPath(); ctx.arc(0, 0, 2, 0, Math.PI * 2); ctx.fillStyle = "#facc15"; ctx.fill();
         } else if (h.kind === "vine") {
           ctx.strokeStyle = "#4d7c0f"; ctx.lineWidth = 2.5; ctx.lineCap = "round";
-          ctx.beginPath();
-          ctx.moveTo(-6, 4); ctx.quadraticCurveTo(-4, -8, 0, -6);
-          ctx.quadraticCurveTo(4, -4, 6, 4);
-          ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(-6, 4); ctx.quadraticCurveTo(-4, -8, 0, -6); ctx.quadraticCurveTo(4, -4, 6, 4); ctx.stroke();
           ctx.fillStyle = "#84cc16";
           ctx.beginPath(); ctx.arc(-4, -3, 2, 0, Math.PI * 2); ctx.fill();
           ctx.beginPath(); ctx.arc(4, -1, 2, 0, Math.PI * 2); ctx.fill();
@@ -838,47 +864,28 @@ export function GameCanvas({
           const age = Math.min(1, (Date.now() - h.plantedAt) / TREE_CONVERT_MS);
           const scale = (0.55 + age * 0.45) * TREE_VISUAL_SCALE;
           ctx.scale(scale, scale);
-          ctx.fillStyle = "#7c4a20";
-          ctx.fillRect(-3, -8, 6, 20);
-          ctx.fillStyle = "#166534";
-          ctx.beginPath(); ctx.arc(0, -20, 16, 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = "#16a34a";
-          ctx.beginPath(); ctx.arc(-9, -14, 11, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#7c4a20"; ctx.fillRect(-3, -8, 6, 20);
+          ctx.fillStyle = "#166534"; ctx.beginPath(); ctx.arc(0, -20, 16, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#16a34a"; ctx.beginPath(); ctx.arc(-9, -14, 11, 0, Math.PI * 2); ctx.fill();
           ctx.beginPath(); ctx.arc(9, -14, 11, 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = "#22c55e";
-          ctx.beginPath(); ctx.arc(0, -26, 9, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = "#22c55e"; ctx.beginPath(); ctx.arc(0, -26, 9, 0, Math.PI * 2); ctx.fill();
         } else if (h.kind === "emp") {
-          // EMP 진동 원 시각화
           const empR = h.empRadius ?? 18;
           if (h.empPhase === "vibrate") {
-            const now5 = Date.now();
-            const wiggle = Math.sin(now5 * 0.02) * 2;
-            ctx.strokeStyle = "#38bdf8";
-            ctx.lineWidth = 2;
-            ctx.globalAlpha = 0.85;
-            ctx.beginPath();
-            ctx.arc(wiggle, wiggle - 3, empR, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.strokeStyle = "#facc15";
-            ctx.lineWidth = 1;
-            ctx.globalAlpha = 0.5;
-            ctx.beginPath();
-            ctx.arc(-wiggle, -wiggle - 3, empR * 0.65, 0, Math.PI * 2);
-            ctx.stroke();
+            const wiggle = Math.sin(Date.now() * 0.02) * 2;
+            ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = 2; ctx.globalAlpha = 0.85;
+            ctx.beginPath(); ctx.arc(wiggle, wiggle - 3, empR, 0, Math.PI * 2); ctx.stroke();
+            ctx.strokeStyle = "#facc15"; ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
+            ctx.beginPath(); ctx.arc(-wiggle, -wiggle - 3, empR * 0.65, 0, Math.PI * 2); ctx.stroke();
             ctx.globalAlpha = 1;
-            // 노란색 점
-            ctx.fillStyle = "#facc15";
-            ctx.beginPath(); ctx.arc(0, -3, 4, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = "#facc15"; ctx.beginPath(); ctx.arc(0, -3, 4, 0, Math.PI * 2); ctx.fill();
           } else if (h.empPhase === "explode") {
-            const explodeAge2 = Date.now() - (h.empExplodeAt ?? Date.now());
-            const prog = Math.min(1, explodeAge2 / 600);
+            const prog = Math.min(1, (Date.now() - (h.empExplodeAt ?? Date.now())) / 600);
             const blastR = EMP_EXPLODE_RADIUS * prog;
             ctx.globalAlpha = 1 - prog;
-            ctx.strokeStyle = "#38bdf8";
-            ctx.lineWidth = 3 + prog * 6;
+            ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = 3 + prog * 6;
             ctx.beginPath(); ctx.arc(0, -3, blastR, 0, Math.PI * 2); ctx.stroke();
-            ctx.strokeStyle = "#facc15";
-            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = "#facc15"; ctx.lineWidth = 1.5;
             ctx.beginPath(); ctx.arc(0, -3, blastR * 0.6, 0, Math.PI * 2); ctx.stroke();
             ctx.globalAlpha = 1;
           }
@@ -886,7 +893,7 @@ export function GameCanvas({
         ctx.restore();
       });
 
-      // 레일건 비주얼 렌더 (탱크/파티클 위에 그려 눈에 띄게)
+      // Railgun visuals
       g.projectiles.forEach(p => {
         const def = WEAPON_DEFS[p.type];
         if (!def.isRailgun || !p.railgunPhase) return;
@@ -897,16 +904,10 @@ export function GameCanvas({
         ctx.save();
         ctx.globalAlpha = alpha;
         ctx.strokeStyle = p.railgunPhase === "beam" ? "#7dd3fc" : "#38bdf8";
-        ctx.lineWidth = w;
-        ctx.lineCap = "round";
-        ctx.shadowColor = "#38bdf8";
-        ctx.shadowBlur = p.railgunPhase === "growing" ? w * 4 : 4;
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-        ctx.lineTo(tx2, ty2);
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = 1;
+        ctx.lineWidth = w; ctx.lineCap = "round";
+        ctx.shadowColor = "#38bdf8"; ctx.shadowBlur = p.railgunPhase === "growing" ? w * 4 : 4;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(tx2, ty2); ctx.stroke();
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1;
         ctx.restore();
       });
 
@@ -919,166 +920,184 @@ export function GameCanvas({
       });
       ctx.globalAlpha = 1;
 
-      // Draw tank helper
-      const drawTank = (tx: number, ty: number, isMe: boolean, ang: number, pwr: number, bodyColor: string, burning: boolean) => {
-        const rx = Math.round(tx);
-        const lx = Math.max(0, rx - 6), rx2 = Math.min(CANVAS_W - 1, rx + 6);
+      // Draw tank
+      const drawTank = (tank: TankState, showAim: boolean) => {
+        if (tank.dead) return;
+        const tx = tank.x, ty = tank.y;
+        const rx = Math.round(Math.min(WORLD_W - 1, Math.max(0, tx)));
+        const lx = Math.max(0, rx - 6), rx2 = Math.min(WORLD_W - 1, rx + 6);
         const slope = Math.atan2(g.terrain[rx2] - g.terrain[lx], 12);
 
         ctx.save(); ctx.translate(tx, ty); ctx.rotate(slope);
-
         // Treads
         ctx.fillStyle = "#3a2c1a";
         ctx.beginPath(); ctx.roundRect(-16, -2, 32, 7, 3); ctx.fill();
         ctx.strokeStyle = "#5c4526"; ctx.lineWidth = 1; ctx.stroke();
-
-        // Body (탱크별 컬러)
-        ctx.fillStyle = bodyColor;
+        // Body
+        ctx.fillStyle = tank.bodyColor;
         ctx.beginPath(); ctx.roundRect(-14, -9, 28, 8, 2); ctx.fill();
         ctx.strokeStyle = "#334155"; ctx.lineWidth = 1; ctx.stroke();
-
-        // Turret dome
+        // Team outline
+        ctx.strokeStyle = tank.team === "red" ? "#f87171" : "#60a5fa";
+        ctx.lineWidth = 1.5; ctx.stroke();
+        // Turret
         ctx.fillStyle = "#64748b";
         ctx.beginPath(); ctx.arc(0, -9, 6, Math.PI, 0); ctx.fill();
         ctx.strokeStyle = "#334155"; ctx.stroke();
-
         ctx.restore();
 
-        // 화상 이펙트
-        if (burning) {
-          ctx.save();
-          ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 100) * 0.2;
-          ctx.beginPath();
-          ctx.arc(tx, ty - 16, 5, 0, Math.PI * 2);
+        // Burn effect
+        if (tank.burn) {
+          ctx.save(); ctx.globalAlpha = 0.7 + Math.sin(Date.now() / 100) * 0.2;
+          ctx.beginPath(); ctx.arc(tx, ty - 16, 5, 0, Math.PI * 2);
           ctx.fillStyle = "#f97316"; ctx.fill();
-          ctx.globalAlpha = 1;
-          ctx.restore();
+          ctx.globalAlpha = 1; ctx.restore();
         }
 
-        // Aim guide for my tank on my turn
-        if (isMe && g.isMyTurn && g.projectiles.length === 0 && !g.firedThisTurn) {
-          const aRad = (ang * Math.PI) / 180;
+        // Aim guide (only for this client's tank on their turn)
+        if (showAim && g.projectiles.length === 0 && !g.firedThisTurn) {
+          const aRad = (g.angle * Math.PI) / 180;
           const curDef = WEAPON_DEFS[g.weapon];
 
           if (curDef.isRailgun) {
-            // 레일건: 직선 레이저 예측선
             let gx = tx, gy = ty - 9;
             const gvx2 = Math.cos(aRad) * 20, gvy2 = -Math.sin(aRad) * 20;
             ctx.beginPath(); ctx.setLineDash([6, 4]);
-            ctx.strokeStyle = "rgba(56,189,248,0.7)"; ctx.lineWidth = 1.5;
-            ctx.moveTo(gx, gy);
-            for (let step = 0; step < 80; step++) {
+            ctx.strokeStyle = "rgba(56,189,248,0.7)"; ctx.lineWidth = 1.5; ctx.moveTo(gx, gy);
+            for (let step = 0; step < 120; step++) {
               gx += gvx2; gy += gvy2;
               const rxg = Math.round(gx);
-              if (gx < 0 || gx >= CANVAS_W || gy > CANVAS_H || (rxg >= 0 && rxg < CANVAS_W && gy >= g.terrain[rxg])) break;
+              if (gx < 0 || gx >= WORLD_W || gy > CANVAS_H || (rxg >= 0 && rxg < WORLD_W && gy >= g.terrain[rxg])) break;
               ctx.lineTo(gx, gy);
             }
             ctx.stroke(); ctx.setLineDash([]);
           } else if (curDef.isMinigun) {
-            // 미니건: 짧고 밀집된 직선 예측선
             ctx.beginPath(); ctx.setLineDash([2, 6]);
             ctx.strokeStyle = "rgba(241,245,249,0.6)"; ctx.lineWidth = 1;
-            ctx.moveTo(tx, ty - 9);
-            ctx.lineTo(tx + Math.cos(aRad) * 80, ty - 9 - Math.sin(aRad) * 80);
+            ctx.moveTo(tx, ty - 9); ctx.lineTo(tx + Math.cos(aRad) * 80, ty - 9 - Math.sin(aRad) * 80);
             ctx.stroke(); ctx.setLineDash([]);
           } else {
-            // 일반: 포물선 예측선
             let gx = tx, gy = ty - 9;
-            const gs = pwr * 0.15;
+            const gs = g.power * 0.15;
             let gvx = Math.cos(aRad) * gs, gvy = -Math.sin(aRad) * gs;
             ctx.beginPath(); ctx.setLineDash([4, 5]);
-            ctx.strokeStyle = "rgba(99,102,241,0.5)"; ctx.lineWidth = 1.5;
-            ctx.moveTo(gx, gy);
+            ctx.strokeStyle = "rgba(99,102,241,0.5)"; ctx.lineWidth = 1.5; ctx.moveTo(gx, gy);
             for (let step = 0; step < 90; step++) {
               gx += gvx; gy += gvy; gvy += GRAVITY;
               const rxg = Math.round(gx);
-              if (gx < 0 || gx >= CANVAS_W || gy > CANVAS_H || (rxg >= 0 && rxg < CANVAS_W && gy >= g.terrain[rxg])) break;
+              if (gx < 0 || gx >= WORLD_W || gy > CANVAS_H || (rxg >= 0 && rxg < WORLD_W && gy >= g.terrain[rxg])) break;
               ctx.lineTo(gx, gy);
             }
             ctx.stroke(); ctx.setLineDash([]);
           }
 
           // Barrel
-          ctx.save(); ctx.translate(tx, ty - 9);
-          ctx.rotate(-aRad);
+          ctx.save(); ctx.translate(tx, ty - 9); ctx.rotate(-aRad);
           ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(18, 0);
           ctx.strokeStyle = "#334155"; ctx.lineWidth = 3; ctx.stroke();
           ctx.restore();
         } else {
-          // Static barrel for opponent
-          const oppRad = isMe ? 0 : Math.PI;
-          ctx.save(); ctx.translate(tx, ty - 9); ctx.rotate(oppRad);
+          // Static barrel (pointing toward enemy team)
+          const barrelDir = tank.dir >= 0 ? 0 : Math.PI;
+          ctx.save(); ctx.translate(tx, ty - 9); ctx.rotate(barrelDir);
           ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(15, -3);
           ctx.strokeStyle = "#334155"; ctx.lineWidth = 3; ctx.stroke();
           ctx.restore();
         }
+
+        // Name label
+        ctx.font = "bold 11px system-ui";
+        ctx.textAlign = "center";
+        ctx.fillStyle = tank.team === "red" ? "#fca5a5" : "#93c5fd";
+        ctx.fillText(tank.profile.name, tx, ty - 30);
       };
 
-      drawTank(g.myX, g.myY, true, g.angle, g.power, myTank.bodyColor, !!g.myBurn);
-      drawTank(g.oppX, g.oppY, false, 180 - g.angle, g.power, oppTank.bodyColor, !!g.oppBurn);
+      // Draw all tanks
+      g.tanks.forEach(tank => {
+        const isMyTankAndMyTurn = tank.socketId === mySocketId && g.isMyTurn;
+        drawTank(tank, isMyTankAndMyTurn);
+      });
 
       // Projectiles
       g.projectiles.forEach(p => {
         const def = WEAPON_DEFS[p.type];
-        // 레일건은 위에서 별도로 그림
         if (def.isRailgun) return;
         const color = def.color;
         if (p.isMinigunBullet) {
-          // 미니건 탄환: 작고 밝은 흰색 직선 모양
-          ctx.save();
-          ctx.strokeStyle = "#f1f5f9";
-          ctx.lineWidth = 1.5;
-          ctx.shadowColor = "#38bdf8";
-          ctx.shadowBlur = 3;
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          ctx.lineTo(p.x - p.vx * 0.4, p.y - p.vy * 0.4);
-          ctx.stroke();
-          ctx.shadowBlur = 0;
-          ctx.restore();
+          ctx.save(); ctx.strokeStyle = "#f1f5f9"; ctx.lineWidth = 1.5;
+          ctx.shadowColor = "#38bdf8"; ctx.shadowBlur = 3;
+          ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.4, p.y - p.vy * 0.4);
+          ctx.stroke(); ctx.shadowBlur = 0; ctx.restore();
           return;
         }
         const r = p.type === "heavy" ? 6 : p.type === "sniper" ? 3 : p.type === "mine" ? 5 : p.type === "emp" ? 5 : 4;
         ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx.fillStyle = color; ctx.fill();
-        // Trail
         if (Math.random() < 0.5) {
           g.particles.push({ x: p.x, y: p.y, vx: -p.vx * 0.08, vy: -p.vy * 0.08, color, radius: Math.random() * 2 + 0.5, life: 0, maxLife: 8 });
         }
       });
 
+      ctx.restore(); // end camera transform
 
-      // Player name labels above tanks
-      ctx.font = "bold 11px system-ui";
-      ctx.textAlign = "center";
-      const myText = myProfile.winRate !== undefined ? `${myProfile.name} (${myProfile.winRate}%)` : myProfile.name;
-      const oppText = opponentProfile.winRate !== undefined ? `${opponentProfile.name} (${opponentProfile.winRate}%)` : opponentProfile.name;
-      ctx.fillStyle = "#4338ca";
-      ctx.fillText(myText, g.myX, g.myY - 28);
-      ctx.fillStyle = "#b91c1c";
-      ctx.fillText(oppText, g.oppX, g.oppY - 28);
+      // ─ Mini-map (no camera offset) ─
+      const mmW = 160, mmH = 36, mmX = VIEW_W - mmW - 8, mmY = 8;
+      const mmScaleX = mmW / WORLD_W, mmScaleH = mmH / CANVAS_H;
+      ctx.save();
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.beginPath(); ctx.roundRect(mmX, mmY, mmW, mmH, 6); ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.15)"; ctx.lineWidth = 1; ctx.stroke();
+      // Terrain line on minimap
+      ctx.beginPath();
+      for (let x = 0; x < WORLD_W; x += 4) {
+        const mx = mmX + x * mmScaleX;
+        const my = mmY + g.terrain[x] * mmScaleH;
+        if (x === 0) ctx.moveTo(mx, my); else ctx.lineTo(mx, my);
+      }
+      ctx.strokeStyle = "#c9975c"; ctx.lineWidth = 1; ctx.stroke();
+      // Tanks on minimap
+      g.tanks.forEach(t => {
+        if (t.dead) return;
+        const mx = mmX + t.x * mmScaleX;
+        const my = mmY + t.y * mmScaleH;
+        ctx.beginPath(); ctx.arc(mx, my - 2, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = t.team === "red" ? "#f87171" : "#60a5fa";
+        // Highlight current active tank
+        if (t.socketId === g.activeSocketId) {
+          ctx.shadowColor = t.team === "red" ? "#f87171" : "#60a5fa"; ctx.shadowBlur = 6;
+        }
+        ctx.fill(); ctx.shadowBlur = 0;
+      });
+      // Camera viewport indicator
+      const vx1 = mmX + camOffset * mmScaleX;
+      const vx2 = mmX + (camOffset + VIEW_W) * mmScaleX;
+      ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1;
+      ctx.strokeRect(vx1, mmY, vx2 - vx1, mmH);
+      ctx.restore();
 
       raf = requestAnimationFrame(loop);
     };
 
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [socket, roomName, myProfile, opponentProfile, initialSeed, onGameEnded]);
+  }, [socket, roomName, myProfile, initialSeed, onGameEnded]);
 
-  // ── Mouse & Touch Aiming (마우스 누르고 있는 동안/터치 드래그/클릭으로 조종) ──────────────────
+  // ── Mouse & Touch Aiming ────────────────────────────────────────────────
   const isPointerDownRef = useRef(false);
-  const pointerStartPosRef = useRef({ x: 0, y: 0 });
 
   const updateAiming = (clientX: number, clientY: number) => {
     const g = G.current;
     if (!g.isMyTurn || g.projectiles.length > 0 || g.firedThisTurn || g.gameOver || !canvasRef.current) return;
+    const me = g.tanks.find(t => t.socketId === mySocketId);
+    if (!me || me.dead) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const scaleX = CANVAS_W / rect.width;
-    const scaleY = CANVAS_H / rect.height;
-    const mx = (clientX - rect.left) * scaleX;
+    const scaleX = VIEW_W / rect.width;
+    const scaleY = VIEW_H / rect.height;
+    // Convert screen position to world position using camera offset
+    const mx = (clientX - rect.left) * scaleX + g.camX;
     const my = (clientY - rect.top) * scaleY;
-    const dx = mx - g.myX;
-    const dy = (g.myY - 9) - my;
+    const dx = mx - me.x;
+    const dy = (me.y - 9) - my;
     let ang = Math.round((Math.atan2(dy, dx) * 180) / Math.PI);
     ang = Math.max(0, Math.min(180, ang));
     const pwr = Math.min(100, Math.max(10, Math.round(Math.hypot(dx, dy) * 0.4)));
@@ -1089,41 +1108,31 @@ export function GameCanvas({
   const handleFireBtn = () => {
     const g = G.current;
     if (!g.isMyTurn || g.projectiles.length > 0 || g.firedThisTurn || g.gameOver) return;
+    const me = g.tanks.find(t => t.socketId === mySocketId);
+    if (!me || me.dead) return;
     g.firedThisTurn = true;
-    spawnProjectile(g.myX, g.myY, g.angle, g.power, g.weapon, "me");
+    spawnProjectile(me.x, me.y, g.angle, g.power, g.weapon, mySocketId);
     socket.emit("game-action", {
       roomName,
-      action: { type: "fire", x: g.myX, y: g.myY, angle: g.angle, power: g.power, weapon: g.weapon },
+      action: { type: "fire", x: me.x, y: me.y, angle: g.angle, power: g.power, weapon: g.weapon, socketId: mySocketId },
     });
   };
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     isPointerDownRef.current = true;
-    pointerStartPosRef.current = { x: e.clientX, y: e.clientY };
     updateAiming(e.clientX, e.clientY);
   };
-
-  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    updateAiming(e.clientX, e.clientY);
-  };
-
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => { updateAiming(e.clientX, e.clientY); };
   const handleCanvasMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
     isPointerDownRef.current = false;
-    // 마우스 클릭 시 즉시 조준 반영 후 발사
     updateAiming(e.clientX, e.clientY);
     handleFireBtn();
   };
-
   const handleCanvasTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    if (e.touches.length > 0) {
-      updateAiming(e.touches[0].clientX, e.touches[0].clientY);
-    }
+    if (e.touches.length > 0) updateAiming(e.touches[0].clientX, e.touches[0].clientY);
   };
-
   const handleCanvasTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    if (e.touches.length > 0) {
-      updateAiming(e.touches[0].clientX, e.touches[0].clientY);
-    }
+    if (e.touches.length > 0) updateAiming(e.touches[0].clientX, e.touches[0].clientY);
   };
 
   const cycleWeapon = () => {
@@ -1131,69 +1140,78 @@ export function GameCanvas({
     if (!g.isMyTurn) return;
     const idx = myWeapons.indexOf(g.weapon);
     const next = myWeapons[(idx + 1) % myWeapons.length];
-    g.weapon = next;
-    setUiWeapon(next);
+    g.weapon = next; setUiWeapon(next);
   };
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => { e.preventDefault(); cycleWeapon(); };
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    cycleWeapon();
-  };
-
-  // 모바일 이동 터치 버튼 핸들러
-  const handleTouchMoveStart = (code: string) => {
-    G.current.keys[code] = true;
-  };
-
-  const handleTouchMoveEnd = (code: string) => {
-    G.current.keys[code] = false;
-  };
+  const handleTouchMoveStart = (code: string) => { G.current.keys[code] = true; };
+  const handleTouchMoveEnd = (code: string) => { G.current.keys[code] = false; };
 
   const weaponDef = WEAPON_DEFS[uiWeapon];
 
+  // Partition players for HUD display
+  const redPlayers = allPlayers.filter(p => p.team === "red");
+  const bluePlayers = allPlayers.filter(p => p.team === "blue");
+
   return (
     <div style={styles.wrapper}>
-      {/* HUD Top */}
+      {/* HUD Top: Red Team | Turn Info | Blue Team */}
       <div style={styles.hud}>
-        {/* My stats */}
-        <div style={styles.hudSide}>
-          <img src={myProfile.image} alt="me" style={{ ...styles.hudAvatar, borderColor: "#6366f1" }} />
-          <div style={styles.hudInfo}>
-            <div style={styles.hudName}>
-              {myProfile.name}
-              {myProfile.winRate !== undefined && (
-                <span style={{ fontSize: "11px", color: "#38bdf8", marginLeft: "6px", backgroundColor: "rgba(56,189,248,0.2)", padding: "1px 6px", borderRadius: "10px" }}>
-                  {myProfile.winRate}%
-                </span>
-              )}
-            </div>
-            <StatBar label="HP" value={uiMyHp} max={myTank.maxHp} color="#ef4444" icon={<Shield size={11} />} />
-            <StatBar label="연료" value={uiMyFuel} max={myTank.maxFuel} color="#eab308" icon={<Zap size={11} />} />
-          </div>
+        {/* Red Team */}
+        <div style={styles.teamHud}>
+          <div style={styles.teamHudLabel}>🔴 레드팀</div>
+          {redPlayers.map(p => {
+            const maxHp = TANKS[p.profile.tankId ?? DEFAULT_TANK_ID].maxHp;
+            const hp = uiTankHps[p.socketId] ?? maxHp;
+            const isActive = G.current.activeSocketId === p.socketId;
+            const isMe = p.socketId === mySocketId;
+            return (
+              <div key={p.socketId} style={{ ...styles.playerHudRow, opacity: hp <= 0 ? 0.4 : 1 }}>
+                <img src={p.profile.image} alt={p.profile.name} style={{ ...styles.hudAvatar, borderColor: "#f87171", boxShadow: isActive ? "0 0 8px #f87171" : "none" }} />
+                <div style={styles.hudInfo}>
+                  <div style={styles.hudName}>
+                    {isMe && <span style={{ color: "#fbbf24", fontSize: "9px" }}>◀ </span>}
+                    {p.profile.name}
+                    {isActive && <span style={{ color: "#f87171", fontSize: "9px" }}> ●</span>}
+                  </div>
+                  <StatBar value={hp} max={maxHp} color="#ef4444" />
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        {/* Center turn info */}
+        {/* Center */}
         <div style={styles.hudCenter}>
           {uiIsMyTurn
             ? <div style={styles.myTurn}>내 차례 💥</div>
-            : <div style={styles.oppTurn}>상대방 차례 ⏳</div>}
+            : <div style={styles.oppTurn}>{uiActiveName}의 차례 ⏳</div>}
           <div style={styles.timer}>{uiTimer}초</div>
+          <div style={{ fontSize: "10px", color: "#94a3b8", marginTop: "2px" }}>{mode.toUpperCase()}</div>
         </div>
 
-        {/* Opp stats */}
-        <div style={{ ...styles.hudSide, flexDirection: "row-reverse" }}>
-          <img src={opponentProfile.image} alt="opp" style={{ ...styles.hudAvatar, borderColor: "#f87171" }} />
-          <div style={{ ...styles.hudInfo, alignItems: "flex-end" }}>
-            <div style={styles.hudName}>
-              {opponentProfile.winRate !== undefined && (
-                <span style={{ fontSize: "11px", color: "#38bdf8", marginRight: "6px", backgroundColor: "rgba(56,189,248,0.2)", padding: "1px 6px", borderRadius: "10px" }}>
-                  {opponentProfile.winRate}%
-                </span>
-              )}
-              {opponentProfile.name}
-            </div>
-            <StatBar label="HP" value={uiOppHp} max={oppTank.maxHp} color="#ef4444" icon={<Shield size={11} />} />
-          </div>
+        {/* Blue Team */}
+        <div style={{ ...styles.teamHud, alignItems: "flex-end" }}>
+          <div style={{ ...styles.teamHudLabel, color: "#60a5fa" }}>🔵 블루팀</div>
+          {bluePlayers.map(p => {
+            const maxHp = TANKS[p.profile.tankId ?? DEFAULT_TANK_ID].maxHp;
+            const hp = uiTankHps[p.socketId] ?? maxHp;
+            const isActive = G.current.activeSocketId === p.socketId;
+            const isMe = p.socketId === mySocketId;
+            return (
+              <div key={p.socketId} style={{ ...styles.playerHudRow, flexDirection: "row-reverse", opacity: hp <= 0 ? 0.4 : 1 }}>
+                <img src={p.profile.image} alt={p.profile.name} style={{ ...styles.hudAvatar, borderColor: "#60a5fa", boxShadow: isActive ? "0 0 8px #60a5fa" : "none" }} />
+                <div style={{ ...styles.hudInfo, alignItems: "flex-end" }}>
+                  <div style={styles.hudName}>
+                    {isMe && <span style={{ color: "#fbbf24", fontSize: "9px" }}> ▶</span>}
+                    {p.profile.name}
+                    {isActive && <span style={{ color: "#60a5fa", fontSize: "9px" }}>● </span>}
+                  </div>
+                  <StatBar value={hp} max={maxHp} color="#ef4444" />
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -1201,8 +1219,8 @@ export function GameCanvas({
       <div style={styles.canvasWrap}>
         <canvas
           ref={canvasRef}
-          width={CANVAS_W}
-          height={CANVAS_H}
+          width={VIEW_W}
+          height={VIEW_H}
           style={styles.canvas}
           onMouseDown={handleCanvasMouseDown}
           onMouseMove={handleCanvasMouseMove}
@@ -1213,46 +1231,27 @@ export function GameCanvas({
         />
       </div>
 
-      {/* Mobile & Desktop Control Bar */}
+      {/* Control Bar */}
       <div style={styles.controlBar}>
-        {/* Left/Right movement buttons for mobile */}
         <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            onTouchStart={() => handleTouchMoveStart("KeyA")}
-            onTouchEnd={() => handleTouchMoveEnd("KeyA")}
-            onMouseDown={() => handleTouchMoveStart("KeyA")}
-            onMouseUp={() => handleTouchMoveEnd("KeyA")}
-            style={styles.mobileDirBtn}
-          >
-            ◀ A (좌)
-          </button>
-          <button
-            onTouchStart={() => handleTouchMoveStart("KeyD")}
-            onTouchEnd={() => handleTouchMoveEnd("KeyD")}
-            onMouseDown={() => handleTouchMoveStart("KeyD")}
-            onMouseUp={() => handleTouchMoveEnd("KeyD")}
-            style={styles.mobileDirBtn}
-          >
-            D (우) ▶
-          </button>
+          <button onTouchStart={() => handleTouchMoveStart("KeyA")} onTouchEnd={() => handleTouchMoveEnd("KeyA")} onMouseDown={() => handleTouchMoveStart("KeyA")} onMouseUp={() => handleTouchMoveEnd("KeyA")} style={styles.mobileDirBtn}>◀ A (좌)</button>
+          <button onTouchStart={() => handleTouchMoveStart("KeyD")} onTouchEnd={() => handleTouchMoveEnd("KeyD")} onMouseDown={() => handleTouchMoveStart("KeyD")} onMouseUp={() => handleTouchMoveEnd("KeyD")} style={styles.mobileDirBtn}>D (우) ▶</button>
         </div>
-
-        {/* Weapon Toggle Button */}
+        {/* My fuel bar (shown only on my turn) */}
+        {uiIsMyTurn && (
+          <div style={styles.fuelDisplay}>
+            <Zap size={12} color="#eab308" />
+            <div style={{ width: "80px", height: "6px", background: "rgba(255,255,255,0.1)", borderRadius: "3px", overflow: "hidden" }}>
+              <div style={{ width: `${(uiMyFuel / myTankDef.maxFuel) * 100}%`, height: "100%", background: "#eab308", borderRadius: "3px", transition: "width 0.1s" }} />
+            </div>
+            <span style={{ fontSize: "10px", color: "#eab308" }}>{Math.round(uiMyFuel)}</span>
+          </div>
+        )}
         <button onClick={cycleWeapon} style={{ ...styles.weaponToggleBtn, borderColor: weaponDef.color }}>
           <span style={{ color: weaponDef.color, fontWeight: "bold" }}>{weaponDef.label}</span>
           <span style={{ fontSize: "10px", color: "#94a3b8" }}>(터치하여 무기 변경)</span>
         </button>
-
-        {/* Fire Button */}
-        <button
-          onClick={handleFireBtn}
-          disabled={!uiIsMyTurn}
-          style={{
-            ...styles.fireBtn,
-            opacity: uiIsMyTurn ? 1 : 0.4,
-            cursor: uiIsMyTurn ? "pointer" : "not-allowed",
-          }}
-        >
+        <button onClick={handleFireBtn} disabled={!uiIsMyTurn} style={{ ...styles.fireBtn, opacity: uiIsMyTurn ? 1 : 0.4, cursor: uiIsMyTurn ? "pointer" : "not-allowed" }}>
           🚀 발사! ({uiAngle}° / {uiPower}P)
         </button>
       </div>
@@ -1260,34 +1259,32 @@ export function GameCanvas({
   );
 }
 
-function StatBar({ label, value, max, color, icon }: { label: string; value: number; max: number; color: string; icon: React.ReactNode }) {
+function StatBar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = Math.max(0, Math.min(100, (value / max) * 100));
   return (
-    <div style={{ marginBottom: "3px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: "3px", fontSize: "10px", color: "#cbd5e1", marginBottom: "2px" }}>
-        {icon}<span>{label}: {value}</span>
-      </div>
-      <div style={{ width: "130px", height: "5px", background: "rgba(255,255,255,0.1)", borderRadius: "3px", overflow: "hidden" }}>
-        <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.3s" }} />
-      </div>
+    <div style={{ width: "100px", height: "5px", background: "rgba(255,255,255,0.1)", borderRadius: "3px", overflow: "hidden", marginTop: "2px" }}>
+      <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.3s" }} />
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
-  wrapper: { display: "flex", flexDirection: "column", gap: "10px", width: "100%", maxWidth: "840px", background: "#1e293b", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "16px", padding: "14px", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.6)", boxSizing: "border-box" },
-  hud: { display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: "10px", gap: "6px" },
-  hudSide: { display: "flex", alignItems: "center", gap: "8px", maxWidth: "230px", flex: 1 },
-  hudAvatar: { width: "40px", height: "40px", borderRadius: "50%", border: "2px solid", objectFit: "cover", background: "#fff", flexShrink: 0 },
+  wrapper: { display: "flex", flexDirection: "column", gap: "8px", width: "100%", maxWidth: "960px", background: "#1e293b", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "16px", padding: "12px", boxShadow: "0 25px 50px -12px rgba(0,0,0,0.6)", boxSizing: "border-box" },
+  hud: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "1px solid rgba(255,255,255,0.07)", paddingBottom: "10px", gap: "6px" },
+  teamHud: { display: "flex", flexDirection: "column", gap: "6px", flex: 1 },
+  teamHudLabel: { fontSize: "11px", fontWeight: "bold", color: "#f87171", marginBottom: "2px", letterSpacing: "0.5px" },
+  playerHudRow: { display: "flex", alignItems: "center", gap: "6px" },
+  hudAvatar: { width: "32px", height: "32px", borderRadius: "50%", border: "2px solid", objectFit: "cover", background: "#fff", flexShrink: 0 },
   hudInfo: { display: "flex", flexDirection: "column", minWidth: 0 },
-  hudName: { fontSize: "12px", fontWeight: "700", color: "#e2e8f0", marginBottom: "3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
-  hudCenter: { display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", flexShrink: 0 },
+  hudName: { fontSize: "10px", fontWeight: "700", color: "#e2e8f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100px" },
+  hudCenter: { display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", flexShrink: 0, padding: "0 8px" },
   myTurn: { background: "linear-gradient(135deg,#10b981,#059669)", color: "#fff", padding: "4px 12px", borderRadius: "20px", fontWeight: "bold", fontSize: "12px", boxShadow: "0 0 12px rgba(16,185,129,0.4)", whiteSpace: "nowrap" },
-  oppTurn: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#94a3b8", padding: "4px 12px", borderRadius: "20px", fontWeight: "bold", fontSize: "12px", whiteSpace: "nowrap" },
+  oppTurn: { background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#94a3b8", padding: "4px 10px", borderRadius: "20px", fontWeight: "bold", fontSize: "11px", whiteSpace: "nowrap", maxWidth: "130px", overflow: "hidden", textOverflow: "ellipsis", textAlign: "center" },
   timer: { fontSize: "11px", color: "#94a3b8" },
-  canvasWrap: { width: "100%", aspectRatio: "800 / 500", borderRadius: "10px", overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", cursor: "crosshair", position: "relative", touchAction: "none" },
+  canvasWrap: { width: "100%", aspectRatio: `${VIEW_W} / ${VIEW_H}`, borderRadius: "10px", overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)", cursor: "crosshair", position: "relative", touchAction: "none" },
   canvas: { width: "100%", height: "100%", display: "block", touchAction: "none" },
   controlBar: { display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(15,23,42,0.6)", borderRadius: "12px", padding: "10px 12px", gap: "8px", flexWrap: "wrap" },
+  fuelDisplay: { display: "flex", alignItems: "center", gap: "4px" },
   mobileDirBtn: { padding: "10px 16px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.2)", backgroundColor: "rgba(255,255,255,0.1)", color: "#ffffff", fontSize: "13px", fontWeight: "bold", cursor: "pointer", userSelect: "none", touchAction: "manipulation" },
   weaponToggleBtn: { display: "flex", flexDirection: "column", alignItems: "center", padding: "6px 14px", borderRadius: "8px", border: "1.5px solid", backgroundColor: "rgba(15,23,42,0.8)", cursor: "pointer", touchAction: "manipulation" },
   fireBtn: { flex: 1, minWidth: "120px", padding: "12px 18px", borderRadius: "8px", border: "none", background: "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)", color: "#ffffff", fontSize: "14px", fontWeight: "bold", boxShadow: "0 4px 12px rgba(239,68,68,0.4)", touchAction: "manipulation" },
