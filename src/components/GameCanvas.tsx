@@ -57,6 +57,10 @@ interface Projectile {
   tsFalling?: boolean; // 트릭샷: 급강하 전환 여부
   embedded?: boolean;  // 지옥의 불: 착탄 후 지형에 박혀 폭발 대기 중
   fuseAge?: number;    // 지옥의 불: 박힌 후 경과 프레임
+  rolling?: boolean;      // 회전톱: 지형을 따라 굴러가는 중
+  rollDir?: number;       // 회전톱: 굴러가는 방향(1 또는 -1)
+  rollUntil?: number;     // 회전톱: 종료 시각(ms epoch)
+  rollLastHit?: Record<string, number>; // 회전톱: 탱크별 마지막 피격 시각
   constellationGroupId?: string; // 별자리: 같은 발사 묶음 식별자
   constellationIndex?: number;   // 별자리: 발사 순서 (연결선 순서 결정)
 }
@@ -110,6 +114,7 @@ interface TankState {
   slowPending: number;
   slowThisTurn: number;
   launch: { active: boolean; vy: number; vx?: number; isMoveShot?: boolean };
+  drilling?: { active: boolean; dir: number; until: number; lastTick: number };
   dead: boolean;
   tankId: TankId;
   bodyColor: string;
@@ -438,6 +443,11 @@ export function GameCanvas({
       return;
     }
 
+    if (def.isCavern) {
+      startCavern(ownerSocketId);
+      return;
+    }
+
     if (def.isRailgun) {
       const railSpd = 20;
       let tx = sx, ty = sy - 12;
@@ -649,6 +659,21 @@ export function GameCanvas({
     if (hitEnemy) applyHpDamage(socketId, def.selfDamage ?? 7);
   };
 
+  // ── 동굴(cavern): 자신이 전방으로 파고들며 전진, 전방에 거대 드릴이 잠시 나타남 ──
+  const startCavern = (socketId: string) => {
+    const g = G.current;
+    const tank = g.tanks.find(t => t.socketId === socketId);
+    if (!tank || tank.dead) return;
+    const cdef = WEAPON_DEFS.cavern;
+    const now = Date.now();
+    tank.drilling = {
+      active: true,
+      dir: tank.dir >= 0 ? 1 : -1,
+      until: now + (cdef.caveDurationMs ?? 1800),
+      lastTick: now,
+    };
+  };
+
   // ── 화염방사기: 전방 원뿔형으로 즉시 화염을 내뿜음 ─────────────────────────
   const fireFlamethrower = (ownerSocketId: string, sx: number, sy: number, ang: number) => {
     const g = G.current;
@@ -708,9 +733,12 @@ export function GameCanvas({
       // Follow active tank or fired projectile
       const activeTank = g.tanks.find(t => t.socketId === g.activeSocketId && !t.dead);
       const flyingMoveTank = g.tanks.find(t => t.launch.active && t.launch.isMoveShot);
+      const drillingTank = g.tanks.find(t => t.drilling?.active);
       let targetCamX = g.camTargetX;
       if (flyingMoveTank) {
         targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, flyingMoveTank.x - VIEW_W / 2));
+      } else if (drillingTank) {
+        targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, drillingTank.x - VIEW_W / 2));
       } else if (g.projectiles.length > 0) {
         const firstProj = g.projectiles[0];
         targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, firstProj.x - VIEW_W / 2));
@@ -776,6 +804,30 @@ export function GameCanvas({
           const rx = Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)));
           if (g.terrain[rx] !== undefined) t.y = g.terrain[rx];
         }
+      });
+
+      // ─ 동굴(cavern): 스스로 파고들며 전진, 전방에 거대 드릴이 잠시 나타나 초당 데미지 ─
+      const nowCave = Date.now();
+      g.tanks.forEach(t => {
+        if (t.dead || !t.drilling?.active) return;
+        const cdef = WEAPON_DEFS.cavern;
+        t.x = Math.max(10, Math.min(WORLD_W - 10, t.x + (cdef.caveMoveSpeed ?? 3) * t.drilling!.dir));
+        const rx = Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)));
+        destructTerrain(t.x, t.y, cdef.caveTunnelRadius ?? 30);
+        if (g.terrain[rx] !== undefined) t.y = g.terrain[rx];
+        if (Math.random() < 0.4) spawnParticles(t.x + t.drilling!.dir * 14, t.y - 4, 2, 2, ["#a16207", "#78350f", "#d6a05a"]);
+
+        if (nowCave - t.drilling!.lastTick >= 200) {
+          t.drilling!.lastTick = nowCave;
+          const drillFrontX = t.x + t.drilling!.dir * 24;
+          g.tanks.forEach(other => {
+            if (other.dead || other.socketId === t.socketId) return;
+            if (Math.abs(other.x - drillFrontX) < 26 && Math.abs(other.y - t.y) < 30) {
+              applyHpDamage(other.socketId, Math.round((cdef.caveDmgPerTick ?? 5) * 0.2));
+            }
+          });
+        }
+        if (nowCave >= t.drilling!.until) t.drilling!.active = false;
       });
 
       // ─ Burn DOT ─
@@ -894,6 +946,32 @@ export function GameCanvas({
           continue;
         }
 
+        if (p.rolling) {
+          // 회전톱: 지형을 따라 구르며 지속시간 동안 닿는 대상에게 피해
+          const now4 = Date.now();
+          if (now4 >= (p.rollUntil ?? 0)) {
+            spawnParticles(p.x, p.y, 8, 2, ["#71717a", "#a1a1aa"]);
+            toRemove.push(i);
+            continue;
+          }
+          p.x = Math.max(0, Math.min(WORLD_W - 1, p.x + (def.rollSpeed ?? 3.5) * (p.rollDir ?? 1)));
+          const rrx = Math.round(p.x);
+          if (g.terrain[rrx] !== undefined) p.y = g.terrain[rrx];
+          if (Math.random() < 0.5) spawnParticles(p.x, p.y - 2, 1, 1, ["#a1a1aa", "#d4d4d8"]);
+          if (!p.rollLastHit) p.rollLastHit = {};
+          g.tanks.forEach(tank => {
+            if (tank.dead || tank.socketId === p.ownerSocketId) return;
+            const lastHit = p.rollLastHit![tank.socketId] ?? 0;
+            if (Math.hypot(tank.x - p.x, tank.y - p.y) < 20 && now4 - lastHit >= (def.rollHitCooldownMs ?? 500)) {
+              applyHpDamage(tank.socketId, def.maxDmg);
+              p.rollLastHit![tank.socketId] = now4;
+              spawnParticles(tank.x, tank.y - 8, 6, 3, ["#a1a1aa", "#facc15"]);
+            }
+          });
+          if (p.x <= 0 || p.x >= WORLD_W - 1) toRemove.push(i);
+          continue;
+        }
+
         if (def.isRailgun) {
           p.railgunAge = (p.railgunAge ?? 0) + 1;
           if (p.railgunPhase === "beam" && p.railgunAge >= RAILGUN_BEAM_FRAMES) {
@@ -995,8 +1073,37 @@ export function GameCanvas({
           }
         }
 
+        if (def.isDrill) {
+          // 드릴: 회전하며 지형을 뚫고 지나가다가 적과 근접하면 폭발
+          destructTerrain(p.x, p.y, 15);
+          if (Math.random() < 0.5) spawnParticles(p.x, p.y, 1, 1, ["#a16207", "#78350f", "#d6a05a"]);
+          let hitAnyone = false;
+          for (const tank of g.tanks) {
+            if (tank.dead || tank.socketId === p.ownerSocketId) continue;
+            if (Math.hypot(tank.x - p.x, tank.y - p.y) < 20) {
+              handleExplosion(p);
+              toRemove.push(i); hitAnyone = true; break;
+            }
+          }
+          if (hitAnyone) continue;
+          if (outOfBounds) { toRemove.push(i); continue; }
+          continue;
+        }
+
         if (outOfBounds || hitTerrain) {
-          if (def.hellfire) {
+          if (def.isSawblade) {
+            // 회전톱: 지형에 닿으면 굴러가는 상태로 전환
+            if (hitTerrain) {
+              p.rolling = true;
+              p.rollDir = Math.sign(p.vx) || 1;
+              p.rollUntil = Date.now() + (def.rollDurationMs ?? 3000);
+              const rrx0 = Math.round(p.x);
+              if (g.terrain[rrx0] !== undefined) p.y = g.terrain[rrx0];
+              spawnParticles(p.x, p.y, 8, 2, ["#71717a", "#facc15"]);
+            } else {
+              toRemove.push(i);
+            }
+          } else if (def.hellfire) {
             // 지옥의 불: 지형에 닿으면 즉시 터지지 않고 박혀서 점점 붉어지다가 지연 폭발
             if (hitTerrain) {
               p.embedded = true;
@@ -1201,8 +1308,9 @@ export function GameCanvas({
       const hasActiveEmp = g.hazards.some(h => h.kind === "emp" && h.empPhase !== "done");
       const hasActiveBeam = g.hazards.some(h => h.kind === "beam");
       const hasFlyingMoveShot = g.tanks.some(t => t.launch.active && t.launch.isMoveShot);
+      const hasDrilling = g.tanks.some(t => t.drilling?.active);
       const hasPendingBursts = g.constellationQueue.length > 0 || g.chainQueue.length > 0;
-      if (g.projectiles.length === 0 && g.minigunQueue.length === 0 && !hasActiveEmp && !hasActiveBeam && !hasFlyingMoveShot && !hasPendingBursts && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
+      if (g.projectiles.length === 0 && g.minigunQueue.length === 0 && !hasActiveEmp && !hasActiveBeam && !hasFlyingMoveShot && !hasDrilling && !hasPendingBursts && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
         g.turnEndEmitted = true;
         socket.emit("game-turn-end", { roomName });
       }
@@ -1568,6 +1676,32 @@ export function GameCanvas({
       g.tanks.forEach(tank => {
         const isMyTankAndMyTurn = tank.socketId === mySocketId && g.isMyTurn;
         drawTank(tank, isMyTankAndMyTurn);
+      });
+
+      // 동굴(cavern) 사용 중: 전방에 거대한 회전 드릴 표시
+      g.tanks.forEach(tank => {
+        if (tank.dead || !tank.drilling?.active) return;
+        const dir = tank.drilling!.dir;
+        const dx = tank.x + dir * 26 - camOffset;
+        const dy = tank.y - 10;
+        ctx.save();
+        ctx.translate(dx, dy);
+        ctx.rotate(Date.now() * 0.02);
+        ctx.fillStyle = "#a16207";
+        for (let blade = 0; blade < 4; blade++) {
+          ctx.save();
+          ctx.rotate((Math.PI / 2) * blade);
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(18, 6);
+          ctx.lineTo(18, -6);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.fillStyle = "#78350f";
+        ctx.beginPath(); ctx.arc(0, 0, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
       });
 
       // Projectiles

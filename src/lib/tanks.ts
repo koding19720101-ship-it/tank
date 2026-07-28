@@ -6,7 +6,8 @@ export type WeaponId =
   | "emp" | "minigun" | "railgun"
   | "moveshot" | "bouncyball" | "trickshot"
   | "flamethrower" | "volcano" | "hellfire"
-  | "satellite" | "constellation" | "supernova";
+  | "satellite" | "constellation" | "supernova"
+  | "drill" | "cavern" | "sawblade";
 
 export type GroundEffect = "mine" | "vine" | "tree" | "emp";
 
@@ -51,6 +52,16 @@ export interface WeaponDef {
   chainDelayFrames?: number; // 초신성: 연쇄 폭발 사이 간격(프레임)
   chainRadius?: number;      // 초신성: 연쇄 폭발 개별 반경
   chainDmg?: number;         // 초신성: 연쇄 폭발 개별 데미지
+  isDrill?: boolean;         // 드릴: 지형을 뚫고 지나가며 적 근접시 폭발
+  isCavern?: boolean;        // 동굴: 자신이 전진하며 굴착, 전방에 거대 드릴 등장
+  caveDurationMs?: number;   // 동굴: 굴착 지속시간(ms)
+  caveDmgPerTick?: number;   // 동굴: 전방 드릴의 초당 데미지
+  caveMoveSpeed?: number;    // 동굴: 굴착 중 이동 속도
+  caveTunnelRadius?: number; // 동굴: 굴착 터널 반경
+  isSawblade?: boolean;      // 회전톱: 지형을 따라 굴러가는 원형톱
+  rollDurationMs?: number;   // 회전톱: 굴러가는 지속시간(ms)
+  rollSpeed?: number;        // 회전톱: 굴러가는 속도
+  rollHitCooldownMs?: number; // 회전톱: 동일 탱크 재피격 쿨다운(ms)
 }
 
 export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
@@ -75,9 +86,12 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   satellite: { label: "위성폭격 🛰️", color: "#a78bfa", radius: 26, maxDmg: 0, isSatellite: true, beamDmgPerSec: 10, beamDurationMs: 2600, beamMaxWidth: 70 },
   constellation: { label: "별자리 ✨", color: "#f8fafc", radius: 16, maxDmg: 8, isConstellation: true, orbCount: 7, orbDelayFrames: 6, lineDamage: 3 },
   supernova: { label: "초신성 🌟", color: "#fef9c3", radius: 46, maxDmg: 11, isSupernova: true, chainCount: 7, chainDelayFrames: 10, chainRadius: 48, chainDmg: 9 },
+  drill: { label: "드릴 🔩", color: "#a16207", radius: 22, maxDmg: 14, splitCount: 3, splitDamage: 14, splitDelay: 2, splitAngleDeg: 22, isDrill: true },
+  cavern: { label: "동굴 🕳️", color: "#78350f", radius: 0, maxDmg: 0, isCavern: true, caveDurationMs: 1800, caveDmgPerTick: 5, caveMoveSpeed: 3.2, caveTunnelRadius: 30 },
+  sawblade: { label: "회전톱 ⚙️", color: "#71717a", radius: 16, maxDmg: 7, isSawblade: true, rollDurationMs: 3000, rollSpeed: 3.5, rollHitCooldownMs: 500 },
 };
 
-export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat" | "inferno" | "cosmo";
+export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat" | "inferno" | "cosmo" | "mole";
 
 export interface TankConfig {
   id: TankId;
@@ -167,7 +181,17 @@ export const TANKS: Record<TankId, TankConfig> = {
     accentColor: "#ffffff",
     passive: "blackhole",
   },
+  mole: {
+    id: "mole",
+    name: "몰 (Mole)",
+    tag: "굴착 특화형 탱크",
+    bodyColor: "#78350f",
+    maxHp: 110,
+    maxFuel: 120,
+    weapons: ["drill", "cavern", "sawblade"],
+    description: "갈색 몸체의 굴착 특화 탱크. 회전하는 드릴로 지형을 뚫고, 스스로 파고드는 동굴 돌진으로 밀어붙이며, 굴러가는 회전톱으로 지나가는 길목을 초토화시킵니다.",
+  },
 };
 
 export const DEFAULT_TANK_ID: TankId = "chrome";
-export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt", "oat", "inferno", "cosmo"];
+export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt", "oat", "inferno", "cosmo", "mole"];

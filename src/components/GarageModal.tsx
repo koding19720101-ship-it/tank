@@ -194,6 +194,12 @@ export function GarageModal({ onClose, currentTankId, onSelectTank, tankStats }:
                           ? `직격 ${w.maxDmg}뎀 · 연결선 ${w.lineDamage}뎀 · ${w.orbCount}연발`
                           : wid === "supernova"
                           ? `데미지 ${w.maxDmg} · 연쇄폭발 ${w.chainCount}회`
+                          : wid === "drill"
+                          ? `분열 ${w.splitCount}갈래 · 개당 ${w.splitDamage}뎀 · 지형 관통`
+                          : wid === "cavern"
+                          ? `초당 ${w.caveDmgPerTick}뎀 · 자가 굴착 돌진`
+                          : wid === "sawblade"
+                          ? `접촉시 ${w.maxDmg}뎀 · ${(w.rollDurationMs ?? 3000) / 1000}초간 굴러감`
                           : w.splitCount
                           ? `분열 ${w.splitCount}갈래 · 개당 ${w.splitDamage}뎀`
                           : `데미지 ${w.maxDmg}`}
@@ -253,6 +259,9 @@ function weaponDesc(wid: string): string {
     case "satellite": return "보라색 탄을 발사하면 착탄 지점 위에서 레이저 빔이 내려옵니다. 빔은 점점 커지며 지형을 파괴하고, 빔에 닿아있는 동안 초당 10 피해를 입습니다.";
     case "constellation": return "빛나는 하얀 탄 7발을 연속으로 발사합니다. 탄들은 발사 순서대로 하얀 선으로 서로 이어져 있으며, 탄에 직격당하면 8 피해, 연결선에 닿기만 해도 3 피해를 입습니다.";
     case "supernova": return "하얀빛으로 빛나는 탄환입니다. 무언가에 닿으면 그 지점 주변에서 무작위 방향으로 연쇄 폭발이 총 7회 발생합니다.";
+    case "drill": return "회전하는 드릴 3개를 발사합니다. 드릴은 지형에 막히지 않고 그대로 뚫고 지나가며, 적과 가까워지면 폭발합니다.";
+    case "cavern": return "자신이 직접 전방으로 파고들며 지형을 뚫고 전진합니다. 전진하는 동안 전방에 거대한 드릴이 나타나 근처의 적에게 지속적으로 피해를 입힙니다.";
+    case "sawblade": return "굴러가는 회전톱을 발사합니다. 지형에 닿으면 그 지형을 따라 앞으로 3초 동안 굴러가며, 굴러가는 동안 닿는 대상에게 피해를 입힙니다.";
     default: return "";
   }
 }
