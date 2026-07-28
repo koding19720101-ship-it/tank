@@ -1140,7 +1140,7 @@ export function GameCanvas({
 
         if (p.type === "sniper" && p.x >= 0 && p.x < WORLD_W) {
           const rix = Math.round(p.x);
-          if (rix >= 0 && rix < WORLD_W && p.y >= g.terrain[rix]) destructTerrain(p.x, p.y, 7);
+          if (rix >= 0 && rix < WORLD_W && p.y >= g.terrain[rix]) destructTerrain(p.x, p.y, 16);
         }
 
         if (def.splitCount && !p.isSplit && p.splitTimer !== undefined) {
