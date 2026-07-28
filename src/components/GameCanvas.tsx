@@ -813,7 +813,8 @@ export function GameCanvas({
         const cdef = WEAPON_DEFS.cavern;
         t.x = Math.max(10, Math.min(WORLD_W - 10, t.x + (cdef.caveMoveSpeed ?? 3) * t.drilling!.dir));
         const rx = Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)));
-        destructTerrain(t.x, t.y, cdef.caveTunnelRadius ?? 30);
+        // 전방 지형만 파괴 (뒤쪽은 그대로 남김)
+        destructTerrain(t.x + t.drilling!.dir * 18, t.y, (cdef.caveTunnelRadius ?? 30) * 0.7);
         if (g.terrain[rx] !== undefined) t.y = g.terrain[rx];
         if (Math.random() < 0.4) spawnParticles(t.x + t.drilling!.dir * 14, t.y - 4, 2, 2, ["#a16207", "#78350f", "#d6a05a"]);
 
@@ -1714,6 +1715,50 @@ export function GameCanvas({
           ctx.shadowColor = "#38bdf8"; ctx.shadowBlur = 3;
           ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.4, p.y - p.vy * 0.4);
           ctx.stroke(); ctx.shadowBlur = 0; ctx.restore();
+          return;
+        }
+        if (def.isDrill) {
+          // 드릴: 회색 삼각형이 진행 방향을 향한 채 빠르게 회전
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(Date.now() * 0.03 + Math.atan2(p.vy, p.vx));
+          ctx.fillStyle = "#9ca3af";
+          ctx.strokeStyle = "#4b5563";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(10, 0);
+          ctx.lineTo(-6, 6);
+          ctx.lineTo(-6, -6);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+          return;
+        }
+        if (def.isSawblade) {
+          // 회전톱: 톱니가 달린 회색 원판이 빠르게 회전
+          const spin = (p.rolling ? p.x * 0.3 : Date.now() * 0.02);
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(spin);
+          const sawR = 9;
+          ctx.fillStyle = "#71717a";
+          ctx.strokeStyle = "#3f3f46";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          const teeth = 8;
+          for (let tth = 0; tth < teeth; tth++) {
+            const a0 = (Math.PI * 2 * tth) / teeth;
+            const a1 = a0 + (Math.PI * 2) / teeth / 2;
+            ctx.lineTo(Math.cos(a0) * sawR, Math.sin(a0) * sawR);
+            ctx.lineTo(Math.cos(a1) * (sawR + 4), Math.sin(a1) * (sawR + 4));
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#a1a1aa";
+          ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI * 2); ctx.fill();
+          ctx.restore();
           return;
         }
         if (def.hellfire) {
