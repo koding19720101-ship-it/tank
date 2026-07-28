@@ -543,7 +543,8 @@ export function GameCanvas({
       spawnParticles(tank.x, tank.y, 40, 6, ["#ef4444", "#f97316", "#fbbf24", "#fff"]);
 
       // 코스모 패시브: 사망시 그 자리에 블랙홀 소환 (4초간 지속, 초당 7뎀)
-      if (TANKS[tank.tankId]?.passive === "blackhole") {
+      const hasBlackhole = TANKS[tank.tankId]?.passive === "blackhole";
+      if (hasBlackhole) {
         const nowD = Date.now();
         g.hazards.push({
           id: Math.random().toString(36).slice(2),
@@ -556,22 +557,21 @@ export function GameCanvas({
         });
       }
 
-      // Only the client whose tank died reports the death (or any client who knows)
-      // Use the first alive player on myTeam or just always report from this client
-      if (socketId === mySocketId) {
-        socket.emit("report-player-dead", { roomName, deadSocketId: socketId });
-      } else {
-        // Let server know via game-action relay: only the player who shot informs server
-        // We broadcast report from the client who sees the kill — use first local kill detection
-        socket.emit("report-player-dead", { roomName, deadSocketId: socketId });
-      }
-
       // Check game over locally
       const redAlive = g.tanks.filter(t => t.team === "red" && !t.dead).length;
       const blueAlive = g.tanks.filter(t => t.team === "blue" && !t.dead).length;
-      if (redAlive === 0 || blueAlive === 0) {
-        // Server will handle the actual game-ended event via report-player-dead
-        g.gameOver = true;
+      const endsGame = redAlive === 0 || blueAlive === 0;
+
+      const reportDeath = () => {
+        socket.emit("report-player-dead", { roomName, deadSocketId: socketId });
+        if (endsGame) g.gameOver = true;
+      };
+
+      if (endsGame && hasBlackhole) {
+        // 블랙홀이 다 사라질 때까지는 게임이 끝나지 않도록 결과 보고를 지연시킴
+        setTimeout(reportDeath, BLACKHOLE_DURATION_MS + 200);
+      } else {
+        reportDeath();
       }
     }
   };

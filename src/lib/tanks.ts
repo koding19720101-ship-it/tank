@@ -74,7 +74,7 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   hellfire: { label: "지옥의 불 😈", color: "#78716c", radius: 95, maxDmg: 17, hellfire: true, fuseFrames: 75, incendiary: true, burnTicks: 8, burnsHazards: true },
   satellite: { label: "위성폭격 🛰️", color: "#a78bfa", radius: 26, maxDmg: 0, isSatellite: true, beamDmgPerSec: 10, beamDurationMs: 2600, beamMaxWidth: 70 },
   constellation: { label: "별자리 ✨", color: "#f8fafc", radius: 16, maxDmg: 8, isConstellation: true, orbCount: 7, orbDelayFrames: 6, lineDamage: 3 },
-  supernova: { label: "초신성 🌟", color: "#fef9c3", radius: 24, maxDmg: 11, isSupernova: true, chainCount: 7, chainDelayFrames: 10, chainRadius: 22, chainDmg: 9 },
+  supernova: { label: "초신성 🌟", color: "#fef9c3", radius: 32, maxDmg: 11, isSupernova: true, chainCount: 7, chainDelayFrames: 10, chainRadius: 34, chainDmg: 9 },
 };
 
 export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat" | "inferno" | "cosmo";
