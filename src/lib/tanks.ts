@@ -5,7 +5,8 @@ export type WeaponId =
   | "vine" | "tree" | "flower"
   | "emp" | "minigun" | "railgun"
   | "moveshot" | "bouncyball" | "trickshot"
-  | "flamethrower" | "volcano" | "hellfire";
+  | "flamethrower" | "volcano" | "hellfire"
+  | "satellite" | "constellation" | "supernova";
 
 export type GroundEffect = "mine" | "vine" | "tree" | "emp";
 
@@ -37,6 +38,19 @@ export interface WeaponDef {
   hellfire?: boolean;       // 지옥의 불: 착탄 후 지연 폭발(점점 붉어짐)
   fuseFrames?: number;      // 지옥의 불: 착탄 후 폭발까지 걸리는 프레임 수
   burnsHazards?: boolean;   // 세계수(나무)/덩쿨 지형지물을 태워 없앨 수 있음
+  isSatellite?: boolean;    // 위성폭격: 착탄 지점에 위에서 내려오는 성장형 레이저 빔 소환
+  beamDmgPerSec?: number;   // 위성폭격 빔: 초당 데미지
+  beamDurationMs?: number;  // 위성폭격 빔: 지속시간(ms)
+  beamMaxWidth?: number;    // 위성폭격 빔: 최대 폭
+  isConstellation?: boolean; // 별자리: 빛나는 탄을 연속 발사, 탄끼리 선으로 연결됨
+  orbCount?: number;         // 별자리: 발사하는 탄 개수
+  orbDelayFrames?: number;   // 별자리: 탄 사이 발사 간격(프레임)
+  lineDamage?: number;       // 별자리: 연결선에 닿았을때 데미지
+  isSupernova?: boolean;     // 초신성: 적중시 연쇄 폭발
+  chainCount?: number;       // 초신성: 총 연쇄 폭발 횟수(최초 폭발 포함)
+  chainDelayFrames?: number; // 초신성: 연쇄 폭발 사이 간격(프레임)
+  chainRadius?: number;      // 초신성: 연쇄 폭발 개별 반경
+  chainDmg?: number;         // 초신성: 연쇄 폭발 개별 데미지
 }
 
 export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
@@ -58,9 +72,12 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   flamethrower: { label: "화염방사기 🔥", color: "#fb923c", radius: 20, maxDmg: 3, isFlamethrower: true, flameRange: 130, burnTicks: 4, burnsHazards: true },
   volcano: { label: "화산 🌋", color: "#f97316", radius: 20, maxDmg: 7, splitCount: 5, splitDamage: 7, splitDelay: 2, splitAngleDeg: 32, incendiary: true, burnTicks: 8, burnsHazards: true },
   hellfire: { label: "지옥의 불 😈", color: "#78716c", radius: 95, maxDmg: 17, hellfire: true, fuseFrames: 75, incendiary: true, burnTicks: 8, burnsHazards: true },
+  satellite: { label: "위성폭격 🛰️", color: "#a78bfa", radius: 26, maxDmg: 0, isSatellite: true, beamDmgPerSec: 10, beamDurationMs: 2600, beamMaxWidth: 70 },
+  constellation: { label: "별자리 ✨", color: "#f8fafc", radius: 16, maxDmg: 8, isConstellation: true, orbCount: 7, orbDelayFrames: 6, lineDamage: 3 },
+  supernova: { label: "초신성 🌟", color: "#fef9c3", radius: 24, maxDmg: 11, isSupernova: true, chainCount: 7, chainDelayFrames: 10, chainRadius: 22, chainDmg: 9 },
 };
 
-export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat" | "inferno";
+export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat" | "inferno" | "cosmo";
 
 export interface TankConfig {
   id: TankId;
@@ -72,6 +89,7 @@ export interface TankConfig {
   weapons: WeaponId[];
   description: string;
   accentColor?: string; // 몸체 테두리 강조색 (지정시 바디 테두리에 표시)
+  passive?: "blackhole"; // 특수 패시브: 사망시 발동하는 효과
 }
 
 export const TANKS: Record<TankId, TankConfig> = {
@@ -137,7 +155,19 @@ export const TANKS: Record<TankId, TankConfig> = {
     description: "짙은 주황 몸체에 옅은 주황 테두리를 두른 화염 특화 탱크. 화염방사기, 화산탄, 지옥의 불로 전장을 불태웁니다. 세계수의 나무와 덩쿨탄의 덩쿨 같은 식물성 지형지물을 태워 없앨 수 있습니다.",
     accentColor: "#fdba74",
   },
+  cosmo: {
+    id: "cosmo",
+    name: "코스모 (Cosmo)",
+    tag: "우주 재해형 탱크",
+    bodyColor: "#0f172a",
+    maxHp: 95,
+    maxFuel: 90,
+    weapons: ["satellite", "constellation", "supernova"],
+    description: "검은 몸체에 하얀 테두리를 두른 우주 재해형 탱크. 위성에서 내려찍는 레이저 빔, 서로 이어진 별자리탄, 연쇄 폭발하는 초신성으로 전장을 재앙에 빠뜨립니다. 사망 시 그 자리에 블랙홀을 남겨 주변을 빨아들이며 피해를 입힙니다.",
+    accentColor: "#ffffff",
+    passive: "blackhole",
+  },
 };
 
 export const DEFAULT_TANK_ID: TankId = "chrome";
-export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt", "oat", "inferno"];
+export const TANK_ORDER: TankId[] = ["chrome", "shotgun", "forest", "bolt", "oat", "inferno", "cosmo"];

@@ -57,13 +57,15 @@ interface Projectile {
   tsFalling?: boolean; // 트릭샷: 급강하 전환 여부
   embedded?: boolean;  // 지옥의 불: 착탄 후 지형에 박혀 폭발 대기 중
   fuseAge?: number;    // 지옥의 불: 박힌 후 경과 프레임
+  constellationGroupId?: string; // 별자리: 같은 발사 묶음 식별자
+  constellationIndex?: number;   // 별자리: 발사 순서 (연결선 순서 결정)
 }
 
 interface Hazard {
   id: string;
   x: number;
   y: number;
-  kind: "mine" | "vine" | "tree" | "emp" | "fire";
+  kind: "mine" | "vine" | "tree" | "emp" | "fire" | "beam" | "blackhole";
   plantedAt: number;
   lastTriggerMap?: Record<string, number>;
   empPhase?: "vibrate" | "explode" | "done";
@@ -73,6 +75,13 @@ interface Hazard {
   fireRadius?: number;         // 지속 화염: 피해 반경
   fireUntil?: number;          // 지속 화염: 꺼지는 시각(ms epoch)
   fireLastTick?: Record<string, number>; // 지속 화염: 탱크별 마지막 틱 시각
+  beamUntil?: number;          // 위성폭격 빔: 종료 시각(ms epoch)
+  beamWidth?: number;          // 위성폭격 빔: 현재 폭
+  beamLastTick?: number;       // 위성폭격 빔: 마지막 데미지 틱 시각
+  ownerSocketId?: string;      // 위성폭격 빔: 발사자 (자신은 피해 제외)
+  blackholeUntil?: number;     // 블랙홀: 종료 시각(ms epoch)
+  blackholeStartedAt?: number; // 블랙홀: 시작 시각(ms epoch)
+  blackholeLastTick?: number;  // 블랙홀: 마지막 데미지 틱 시각
 }
 
 interface BurnState {
@@ -129,6 +138,12 @@ const TREE_TRIGGER_COOLDOWN_MS = 1500;
 const TREE_TRIGGER_RADIUS = 26;
 const TREE_MOUND_RADIUS = 50;
 const TREE_VISUAL_SCALE = 3.0;
+const BEAM_TICK_MS = 500;
+const BLACKHOLE_DURATION_MS = 4000;
+const BLACKHOLE_DMG_PER_SEC = 7;
+const BLACKHOLE_TICK_MS = 500;
+const BLACKHOLE_MAX_RADIUS = 85;
+const BLACKHOLE_PULL_RADIUS = 140;
 
 export function GameCanvas({
   socket,
@@ -199,6 +214,18 @@ export function GameCanvas({
       ownerSocketId: string;
       lastSpawn: number;
     }>,
+    constellationQueue: [] as Array<{
+      remaining: number; total: number;
+      sx: number; sy: number;
+      ang: number; pwr: number;
+      ownerSocketId: string;
+      lastSpawn: number;
+      groupId: string;
+    }>,
+    chainQueue: [] as Array<{
+      x: number; y: number; ownerSocketId: string; delay: number;
+    }>,
+    constellationLineHits: new Set<string>(),
     // Camera
     camX: 0,
     camTargetX: 0,
@@ -397,6 +424,15 @@ export function GameCanvas({
       return;
     }
 
+    if (def.isConstellation) {
+      const groupId = Math.random().toString(36).slice(2);
+      g.constellationQueue.push({
+        remaining: def.orbCount ?? 7, total: def.orbCount ?? 7,
+        sx, sy, ang, pwr, ownerSocketId, lastSpawn: 0, groupId,
+      });
+      return;
+    }
+
     if (def.isFlamethrower) {
       fireFlamethrower(ownerSocketId, sx, sy, ang);
       return;
@@ -506,6 +542,20 @@ export function GameCanvas({
       tank.dead = true;
       spawnParticles(tank.x, tank.y, 40, 6, ["#ef4444", "#f97316", "#fbbf24", "#fff"]);
 
+      // 코스모 패시브: 사망시 그 자리에 블랙홀 소환 (4초간 지속, 초당 7뎀)
+      if (TANKS[tank.tankId]?.passive === "blackhole") {
+        const nowD = Date.now();
+        g.hazards.push({
+          id: Math.random().toString(36).slice(2),
+          x: tank.x, y: tank.y,
+          kind: "blackhole",
+          plantedAt: nowD,
+          blackholeStartedAt: nowD,
+          blackholeUntil: nowD + BLACKHOLE_DURATION_MS,
+          blackholeLastTick: nowD,
+        });
+      }
+
       // Only the client whose tank died reports the death (or any client who knows)
       // Use the first alive player on myTeam or just always report from this client
       if (socketId === mySocketId) {
@@ -526,11 +576,11 @@ export function GameCanvas({
     }
   };
 
-  const explodeAt = (ex: number, ey: number, wep: WeaponId, isSplit: boolean) => {
+  const explodeAt = (ex: number, ey: number, wep: WeaponId, isSplit: boolean, overrideRadius?: number, overrideDmg?: number) => {
     const g = G.current;
     const def = WEAPON_DEFS[wep];
-    const radius = def.radius;
-    const maxDmg = isSplit ? (def.splitDamage ?? def.maxDmg) : def.maxDmg;
+    const radius = overrideRadius ?? def.radius;
+    const maxDmg = overrideDmg ?? (isSplit ? (def.splitDamage ?? def.maxDmg) : def.maxDmg);
     const destructRadius = wep === "heavy" ? 38 : wep === "hellfire" ? 60 : wep === "sniper" ? 12 : wep === "mine" ? 30 : 16;
     const particleCount = wep === "heavy" ? 35 : wep === "hellfire" ? 42 : wep === "mine" ? 30 : wep === "sniper" ? 15 : 12;
     const palette = def.incendiary ? ["#f97316", "#fb923c", "#fde047", "#7c2d12"] : undefined;
@@ -963,6 +1013,21 @@ export function GameCanvas({
             p.vx *= 0.85;
             p.y -= 3;
             p.bounces = (p.bounces ?? def.maxBounces ?? 5) - 1;
+          } else if (def.isSatellite && hitTerrain) {
+            // 위성폭격: 착탄 지점에 직접 폭발하는 대신 위에서 내려오는 성장형 빔을 소환
+            const rx3 = Math.max(0, Math.min(WORLD_W - 1, rix));
+            g.hazards.push({
+              id: Math.random().toString(36).slice(2),
+              x: p.x, y: g.terrain[rx3],
+              kind: "beam",
+              plantedAt: Date.now(),
+              beamUntil: Date.now() + (def.beamDurationMs ?? 2600),
+              beamWidth: 0,
+              beamLastTick: Date.now(),
+              ownerSocketId: p.ownerSocketId,
+            });
+            spawnParticles(p.x, p.y, 10, 3, ["#a78bfa", "#ddd6fe", "#fff"]);
+            toRemove.push(i);
           } else if (def.groundEffect) {
             if (hitTerrain) {
               const rx2 = Math.max(0, Math.min(WORLD_W - 1, rix));
@@ -978,12 +1043,143 @@ export function GameCanvas({
               explodeAt(p.x, p.y, p.type, true);
             } else {
               handleExplosion(p);
+              if (def.isSupernova && p.x >= 0 && p.x < WORLD_W) {
+                const extra = (def.chainCount ?? 7) - 1;
+                for (let c = 0; c < extra; c++) {
+                  g.chainQueue.push({
+                    x: p.x, y: p.y,
+                    ownerSocketId: p.ownerSocketId,
+                    delay: (def.chainDelayFrames ?? 10) * (c + 1),
+                  });
+                }
+              }
             }
             toRemove.push(i);
           }
         }
       }
       toRemove.forEach(i => g.projectiles.splice(i, 1));
+
+      // ─ 초신성 연쇄 폭발 대기열 ─
+      if (g.chainQueue.length > 0) {
+        const supDef = WEAPON_DEFS.supernova;
+        for (let c = g.chainQueue.length - 1; c >= 0; c--) {
+          const item = g.chainQueue[c];
+          item.delay--;
+          if (item.delay <= 0) {
+            const rad = Math.random() * Math.PI * 2;
+            const dist = 18 + Math.random() * 34;
+            const cx = Math.max(0, Math.min(WORLD_W - 1, item.x + Math.cos(rad) * dist));
+            const cy = item.y + Math.sin(rad) * dist * 0.5;
+            explodeAt(cx, cy, "supernova", false, supDef.chainRadius, supDef.chainDmg);
+            g.chainQueue.splice(c, 1);
+          }
+        }
+      }
+
+      // ─ 별자리 발사 대기열 (연속 발사 + 탄 사이 연결선 데미지) ─
+      if (g.constellationQueue.length > 0) {
+        const nowC = Date.now();
+        const csDef = WEAPON_DEFS.constellation;
+        for (let q = g.constellationQueue.length - 1; q >= 0; q--) {
+          const item = g.constellationQueue[q];
+          if (nowC - item.lastSpawn >= (csDef.orbDelayFrames ?? 6) * 16.7) {
+            item.lastSpawn = nowC;
+            const idx = item.total - item.remaining;
+            item.remaining--;
+            const angRad2 = (item.ang * Math.PI) / 180;
+            const spd2 = item.pwr * 0.15;
+            const jitter = (Math.random() - 0.5) * 0.05;
+            g.projectiles.push({
+              id: Math.random().toString(36).slice(2),
+              x: item.sx, y: item.sy - 12,
+              vx: Math.cos(angRad2 + jitter) * spd2, vy: -Math.sin(angRad2 + jitter) * spd2 - idx * 0.3,
+              type: "constellation", ownerSocketId: item.ownerSocketId,
+              constellationGroupId: item.groupId, constellationIndex: idx,
+            });
+            if (item.remaining <= 0) g.constellationQueue.splice(q, 1);
+          }
+        }
+      }
+
+      // ─ 별자리 연결선 데미지 (같은 그룹의 인접한 탄 사이 선에 닿으면 소량 피해) ─
+      const constellationOrbs = g.projectiles.filter(p => p.type === "constellation");
+      if (constellationOrbs.length >= 2) {
+        const csDef = WEAPON_DEFS.constellation;
+        const groups = new Map<string, Projectile[]>();
+        constellationOrbs.forEach(o => {
+          const arr = groups.get(o.constellationGroupId ?? "") ?? [];
+          arr.push(o);
+          groups.set(o.constellationGroupId ?? "", arr);
+        });
+        groups.forEach(orbs => {
+          orbs.sort((a, b) => (a.constellationIndex ?? 0) - (b.constellationIndex ?? 0));
+          for (let oi = 0; oi < orbs.length - 1; oi++) {
+            const a = orbs[oi], b = orbs[oi + 1];
+            g.tanks.forEach(tank => {
+              if (tank.dead || tank.socketId === a.ownerSocketId) return;
+              const dx = b.x - a.x, dy = b.y - a.y;
+              const lenSq = dx * dx + dy * dy || 1;
+              const t = Math.max(0, Math.min(1, ((tank.x - a.x) * dx + (tank.y - a.y) * dy) / lenSq));
+              const cx = a.x + t * dx, cy = a.y + t * dy;
+              if (Math.hypot(tank.x - cx, tank.y - cy) < 10) {
+                const key = `${a.id}_${b.id}`;
+                if (!G.current.constellationLineHits.has(key + "_" + tank.socketId)) {
+                  G.current.constellationLineHits.add(key + "_" + tank.socketId);
+                  applyHpDamage(tank.socketId, csDef.lineDamage ?? 3);
+                  spawnParticles(cx, cy, 5, 1.5, ["#f8fafc", "#e2e8f0"]);
+                }
+              }
+            });
+          }
+        });
+      }
+
+      // ─ 위성폭격 빔 / 블랙홀 지속 효과 ─
+      if (g.hazards.some(h => h.kind === "beam" || h.kind === "blackhole")) {
+        const nowB = Date.now();
+        const satDef = WEAPON_DEFS.satellite;
+        const bhRemove = new Set<number>();
+        g.hazards.forEach((h, idx) => {
+          if (h.kind === "beam") {
+            const total = (h.beamUntil ?? nowB) - h.plantedAt;
+            const elapsed = nowB - h.plantedAt;
+            const growProgress = Math.min(1, elapsed / Math.max(1, total * 0.4));
+            h.beamWidth = (satDef.beamMaxWidth ?? 70) * growProgress;
+            if (Math.random() < 0.6) destructTerrain(h.x, h.y, (h.beamWidth ?? 10) * 0.5);
+            if (nowB - (h.beamLastTick ?? 0) >= BEAM_TICK_MS) {
+              h.beamLastTick = nowB;
+              g.tanks.forEach(tank => {
+                if (tank.dead || tank.socketId === h.ownerSocketId) return;
+                if (Math.abs(tank.x - h.x) < (h.beamWidth ?? 10) / 2 + 12) {
+                  applyHpDamage(tank.socketId, Math.round((satDef.beamDmgPerSec ?? 10) * (BEAM_TICK_MS / 1000)));
+                  spawnParticles(tank.x, tank.y - 10, 4, 2, ["#a78bfa", "#ddd6fe"]);
+                }
+              });
+            }
+            if (nowB >= (h.beamUntil ?? 0)) bhRemove.add(idx);
+          } else if (h.kind === "blackhole") {
+            const elapsed = nowB - (h.blackholeStartedAt ?? h.plantedAt);
+            const progress = Math.min(1, elapsed / BLACKHOLE_DURATION_MS);
+            const curRadius = BLACKHOLE_MAX_RADIUS * progress;
+            g.tanks.forEach(tank => {
+              if (tank.dead) return;
+              const dist = Math.hypot(tank.x - h.x, tank.y - h.y);
+              if (dist < BLACKHOLE_PULL_RADIUS) {
+                const pull = (1 - dist / BLACKHOLE_PULL_RADIUS) * 1.6;
+                const dir = tank.x > h.x ? -1 : 1;
+                tank.x = Math.max(10, Math.min(WORLD_W - 10, tank.x + dir * pull));
+              }
+              if (dist < curRadius + 16 && nowB - (h.blackholeLastTick ?? 0) >= BLACKHOLE_TICK_MS) {
+                applyHpDamage(tank.socketId, Math.round(BLACKHOLE_DMG_PER_SEC * (BLACKHOLE_TICK_MS / 1000)));
+              }
+            });
+            if (nowB - (h.blackholeLastTick ?? 0) >= BLACKHOLE_TICK_MS) h.blackholeLastTick = nowB;
+            if (nowB >= (h.blackholeUntil ?? 0)) bhRemove.add(idx);
+          }
+        });
+        if (bhRemove.size) g.hazards = g.hazards.filter((_, idx) => !bhRemove.has(idx));
+      }
 
       // ─ Minigun burst queue ─
       if (g.minigunQueue.length > 0) {
@@ -1003,8 +1199,10 @@ export function GameCanvas({
 
       // Auto end turn
       const hasActiveEmp = g.hazards.some(h => h.kind === "emp" && h.empPhase !== "done");
+      const hasActiveBeam = g.hazards.some(h => h.kind === "beam");
       const hasFlyingMoveShot = g.tanks.some(t => t.launch.active && t.launch.isMoveShot);
-      if (g.projectiles.length === 0 && g.minigunQueue.length === 0 && !hasActiveEmp && !hasFlyingMoveShot && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
+      const hasPendingBursts = g.constellationQueue.length > 0 || g.chainQueue.length > 0;
+      if (g.projectiles.length === 0 && g.minigunQueue.length === 0 && !hasActiveEmp && !hasActiveBeam && !hasFlyingMoveShot && !hasPendingBursts && g.firedThisTurn && !g.turnEndEmitted && !g.gameOver) {
         g.turnEndEmitted = true;
         socket.emit("game-turn-end", { roomName });
       }
@@ -1137,9 +1335,73 @@ export function GameCanvas({
             ctx.fill();
           }
           ctx.globalAlpha = 1;
+        } else if (h.kind === "beam") {
+          const satDef = WEAPON_DEFS.satellite;
+          const w = h.beamWidth ?? 4;
+          const elapsed = Date.now() - h.plantedAt;
+          const total = (h.beamUntil ?? Date.now()) - h.plantedAt;
+          const fadeAlpha = Math.max(0, Math.min(1, (total - elapsed) / Math.max(1, total * 0.25)));
+          ctx.save();
+          ctx.globalAlpha = 0.75 * Math.max(0.35, fadeAlpha);
+          const beamGrad = ctx.createLinearGradient(0, -CANVAS_H, 0, 0);
+          beamGrad.addColorStop(0, "rgba(167,139,250,0)");
+          beamGrad.addColorStop(0.4, "rgba(167,139,250,0.55)");
+          beamGrad.addColorStop(1, "rgba(221,214,254,0.85)");
+          ctx.fillStyle = beamGrad;
+          ctx.fillRect(-w / 2, -CANVAS_H, Math.max(2, w), CANVAS_H);
+          ctx.strokeStyle = "#a78bfa"; ctx.lineWidth = 1.5;
+          ctx.strokeRect(-w / 2, -CANVAS_H, Math.max(2, w), CANVAS_H);
+          if (Math.random() < 0.4) {
+            g.particles.push({ x: h.x + (Math.random() - 0.5) * w, y: 0, vx: 0, vy: -1, color: "#a78bfa", radius: Math.random() * 2 + 1, life: 0, maxLife: 12 });
+          }
+          void satDef;
+          ctx.restore();
+        } else if (h.kind === "blackhole") {
+          const elapsed = Date.now() - (h.blackholeStartedAt ?? h.plantedAt);
+          const progress = Math.min(1, elapsed / BLACKHOLE_DURATION_MS);
+          const r = BLACKHOLE_MAX_RADIUS * progress;
+          ctx.save();
+          const bhGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+          bhGrad.addColorStop(0, "rgba(0,0,0,1)");
+          bhGrad.addColorStop(0.7, "rgba(30,10,50,0.9)");
+          bhGrad.addColorStop(1, "rgba(139,92,246,0.15)");
+          ctx.fillStyle = bhGrad;
+          ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "rgba(196,181,253,0.6)"; ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
+          if (Math.random() < 0.5) {
+            const a = Math.random() * Math.PI * 2;
+            const d = BLACKHOLE_PULL_RADIUS * (0.6 + Math.random() * 0.4);
+            g.particles.push({ x: h.x + Math.cos(a) * d, y: (h.y - 3) + Math.sin(a) * d * 0.4, vx: -Math.cos(a) * 2, vy: -Math.sin(a) * 1, color: "#a78bfa", radius: Math.random() * 2 + 1, life: 0, maxLife: 20 });
+          }
+          ctx.restore();
         }
         ctx.restore();
       });
+
+      // Constellation connecting lines
+      {
+        const csOrbs = g.projectiles.filter(p => p.type === "constellation");
+        if (csOrbs.length >= 2) {
+          const csGroups = new Map<string, Projectile[]>();
+          csOrbs.forEach(o => {
+            const arr = csGroups.get(o.constellationGroupId ?? "") ?? [];
+            arr.push(o);
+            csGroups.set(o.constellationGroupId ?? "", arr);
+          });
+          csGroups.forEach(orbs => {
+            orbs.sort((a, b) => (a.constellationIndex ?? 0) - (b.constellationIndex ?? 0));
+            ctx.save();
+            ctx.strokeStyle = "rgba(248,250,252,0.75)";
+            ctx.lineWidth = 1.2;
+            ctx.shadowColor = "#fff"; ctx.shadowBlur = 4;
+            ctx.beginPath();
+            orbs.forEach((o, oi) => { if (oi === 0) ctx.moveTo(o.x, o.y); else ctx.lineTo(o.x, o.y); });
+            ctx.stroke();
+            ctx.restore();
+          });
+        }
+      }
 
       // Railgun visuals
       g.projectiles.forEach(p => {
@@ -1302,9 +1564,16 @@ export function GameCanvas({
           }
           return;
         }
-        const r = p.type === "heavy" ? 6 : p.type === "sniper" ? 3 : p.type === "mine" ? 5 : p.type === "emp" ? 5 : 4;
+        const r = p.type === "heavy" ? 6 : p.type === "sniper" ? 3 : p.type === "mine" ? 5 : p.type === "emp" ? 5 : p.type === "constellation" ? 4.5 : p.type === "supernova" ? 6 : 4;
         ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.fillStyle = color; ctx.fill();
+        if (p.type === "constellation" || p.type === "supernova") {
+          ctx.save();
+          ctx.shadowColor = color; ctx.shadowBlur = 10;
+          ctx.fillStyle = color; ctx.fill();
+          ctx.restore();
+        } else {
+          ctx.fillStyle = color; ctx.fill();
+        }
         if (Math.random() < 0.5) {
           g.particles.push({ x: p.x, y: p.y, vx: -p.vx * 0.08, vy: -p.vy * 0.08, color, radius: Math.random() * 2 + 0.5, life: 0, maxLife: 8 });
         }
