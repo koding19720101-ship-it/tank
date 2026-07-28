@@ -57,7 +57,7 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   trickshot: { label: "트릭샷 🎯", color: "#fda4af", radius: 30, maxDmg: 22, trickshot: true, straightFrames: 32 },
   flamethrower: { label: "화염방사기 🔥", color: "#fb923c", radius: 20, maxDmg: 3, isFlamethrower: true, flameRange: 130, burnTicks: 4, burnsHazards: true },
   volcano: { label: "화산 🌋", color: "#f97316", radius: 20, maxDmg: 7, splitCount: 5, splitDamage: 7, splitDelay: 2, splitAngleDeg: 32, incendiary: true, burnTicks: 8, burnsHazards: true },
-  hellfire: { label: "지옥의 불 😈", color: "#78716c", radius: 50, maxDmg: 26, hellfire: true, fuseFrames: 75, incendiary: true, burnTicks: 8, burnsHazards: true },
+  hellfire: { label: "지옥의 불 😈", color: "#78716c", radius: 95, maxDmg: 26, hellfire: true, fuseFrames: 75, incendiary: true, burnTicks: 8, burnsHazards: true },
 };
 
 export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat" | "inferno";

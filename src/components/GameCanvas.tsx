@@ -63,13 +63,16 @@ interface Hazard {
   id: string;
   x: number;
   y: number;
-  kind: "mine" | "vine" | "tree" | "emp";
+  kind: "mine" | "vine" | "tree" | "emp" | "fire";
   plantedAt: number;
   lastTriggerMap?: Record<string, number>;
   empPhase?: "vibrate" | "explode" | "done";
   empRadius?: number;
   empExplodeAt?: number;
   empLastDamageSet?: Set<string>;
+  fireRadius?: number;         // 지속 화염: 피해 반경
+  fireUntil?: number;          // 지속 화염: 꺼지는 시각(ms epoch)
+  fireLastTick?: Record<string, number>; // 지속 화염: 탱크별 마지막 틱 시각
 }
 
 interface BurnState {
@@ -112,6 +115,8 @@ const VIEW_H = 550;
 const GRAVITY = 0.25;
 const BURN_DMG_PER_TICK = 2;
 const BURN_TICKS = 4;
+const GROUND_FIRE_DMG_PER_TICK = 3;
+const GROUND_FIRE_TICK_MS = 700;
 const MINE_TRIGGER_RADIUS = 13;
 const TREE_CONVERT_MS = 4000;
 const TREE_BOUNCE_VY = -7.5;
@@ -451,6 +456,40 @@ export function GameCanvas({
     });
   };
 
+  // 지형에 몇 초간 불이 붙는 지속 화염 지대를 생성 (소이탄/화산/지옥의 불/화염방사기 공통)
+  const igniteGround = (x: number, y: number, radius: number, durationMs: number) => {
+    const g = G.current;
+    const fx = Math.max(0, Math.min(WORLD_W - 1, Math.round(x)));
+    const fy = g.terrain[fx] ?? y;
+    g.hazards.push({
+      id: Math.random().toString(36).slice(2),
+      x, y: fy,
+      kind: "fire",
+      plantedAt: Date.now(),
+      fireRadius: radius,
+      fireUntil: Date.now() + durationMs,
+    });
+  };
+
+  // 지옥의 불 폭발시 소이탄을 위로 한 번 더 쏘아 올림 (2차 화염 확산)
+  const launchIncendiaryBurst = (x: number, y: number, ownerSocketId: string) => {
+    const g = G.current;
+    const idef = WEAPON_DEFS.incendiary;
+    const upSpd = 13 + Math.random() * 3;
+    const angDeg = 90 + (Math.random() * 20 - 10);
+    const angRad = (angDeg * Math.PI) / 180;
+    g.projectiles.push({
+      id: Math.random().toString(36).slice(2),
+      x, y: y - 6,
+      vx: Math.cos(angRad) * upSpd,
+      vy: -Math.sin(angRad) * upSpd,
+      type: "incendiary",
+      ownerSocketId,
+      splitTimer: idef.splitDelay ?? 45,
+      isSplit: false,
+    });
+  };
+
   const applyHpDamage = (socketId: string, dmg: number) => {
     const g = G.current;
     if (dmg <= 0) return;
@@ -492,13 +531,17 @@ export function GameCanvas({
     const def = WEAPON_DEFS[wep];
     const radius = def.radius;
     const maxDmg = isSplit ? (def.splitDamage ?? def.maxDmg) : def.maxDmg;
-    const destructRadius = wep === "heavy" ? 38 : wep === "sniper" ? 12 : wep === "mine" ? 30 : 16;
-    const particleCount = wep === "heavy" ? 35 : wep === "mine" ? 30 : wep === "sniper" ? 15 : 12;
+    const destructRadius = wep === "heavy" ? 38 : wep === "hellfire" ? 60 : wep === "sniper" ? 12 : wep === "mine" ? 30 : 16;
+    const particleCount = wep === "heavy" ? 35 : wep === "hellfire" ? 42 : wep === "mine" ? 30 : wep === "sniper" ? 15 : 12;
     const palette = def.incendiary ? ["#f97316", "#fb923c", "#fde047", "#7c2d12"] : undefined;
 
     destructTerrain(ex, ey, destructRadius);
     spawnParticles(ex, ey, particleCount, 4, palette);
     if (def.burnsHazards) burnNearbyHazards(ex, ey, radius);
+    if (def.incendiary) {
+      const groundDur = 3000 + (def.burnTicks ?? BURN_TICKS) * 500;
+      igniteGround(ex, ey, Math.max(30, radius * 0.85), groundDur);
+    }
 
     g.tanks.forEach(tank => {
       if (tank.dead) return;
@@ -590,6 +633,9 @@ export function GameCanvas({
     if (def.burnsHazards) {
       burnNearbyHazards(sx0 + dirX * range * 0.5, sy0 + dirY * range * 0.5, range * 0.65);
     }
+    const groundDur = 3000 + (def.burnTicks ?? BURN_TICKS) * 500;
+    igniteGround(sx0 + dirX * range * 0.45, sy0 + dirY * range * 0.45, 32, groundDur);
+    igniteGround(sx0 + dirX * range * 0.9, sy0 + dirY * range * 0.9, 32, groundDur);
   };
 
   // ── Main Canvas Loop ─────────────────────────────────────────────────────
@@ -724,8 +770,27 @@ export function GameCanvas({
                 spawnParticles(h.x, h.y, 10, 3, ["#16a34a", "#4ade80"]);
                 h.lastTriggerMap![tank.socketId] = now3;
               }
+            } else if (h.kind === "fire") {
+              if (!h.fireLastTick) h.fireLastTick = {};
+              const distX = Math.abs(tank.x - h.x);
+              if (distX < (h.fireRadius ?? 40)) {
+                const lastTick = h.fireLastTick![tank.socketId] ?? 0;
+                if (now3 - lastTick >= GROUND_FIRE_TICK_MS) {
+                  applyHpDamage(tank.socketId, GROUND_FIRE_DMG_PER_TICK);
+                  h.fireLastTick![tank.socketId] = now3;
+                  spawnParticles(tank.x, tank.y - 12, 3, 2, ["#f97316", "#fde047"]);
+                }
+              }
             }
           });
+
+          if (h.kind === "fire") {
+            if (Math.random() < 0.35) {
+              const spreadX = (Math.random() - 0.5) * (h.fireRadius ?? 40) * 1.6;
+              spawnParticles(h.x + spreadX, h.y - 2, 1, 1, ["#f97316", "#fde047", "#dc2626"]);
+            }
+            if (now3 >= (h.fireUntil ?? 0)) hzToRemove.add(idx);
+          }
 
           if (h.kind === "tree" && now3 - h.plantedAt > TREE_CONVERT_MS) {
             growTerrainMound(h.x, h.y, TREE_MOUND_RADIUS);
@@ -771,6 +836,7 @@ export function GameCanvas({
           p.fuseAge = (p.fuseAge ?? 0) + 1;
           if (p.fuseAge >= (def.fuseFrames ?? 60)) {
             handleExplosion(p);
+            if (def.hellfire) launchIncendiaryBurst(p.x, p.y, p.ownerSocketId);
             toRemove.push(i);
           } else if (p.fuseAge % 8 === 0) {
             spawnParticles(p.x, p.y - 2, 2, 1, ["#78716c", "#f97316", "#dc2626"]);
@@ -1048,6 +1114,29 @@ export function GameCanvas({
             ctx.beginPath(); ctx.arc(0, -3, blastR * 0.6, 0, Math.PI * 2); ctx.stroke();
             ctx.globalAlpha = 1;
           }
+        } else if (h.kind === "fire") {
+          const remainMs = (h.fireUntil ?? 0) - Date.now();
+          const fadeAlpha = Math.max(0, Math.min(1, remainMs / 800));
+          const fr = h.fireRadius ?? 40;
+          const flicker = Math.sin(Date.now() * 0.012 + h.x) * 3;
+          ctx.globalAlpha = 0.85 * fadeAlpha;
+          const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, fr);
+          grad.addColorStop(0, "rgba(253,224,71,0.55)");
+          grad.addColorStop(0.5, "rgba(249,115,22,0.35)");
+          grad.addColorStop(1, "rgba(124,45,18,0)");
+          ctx.fillStyle = grad;
+          ctx.beginPath(); ctx.ellipse(0, -2, fr, 10, 0, 0, Math.PI * 2); ctx.fill();
+          for (let fk = 0; fk < 4; fk++) {
+            const fx = (fk - 1.5) * (fr / 3.2);
+            const fh = 10 + Math.sin(Date.now() * 0.01 + fk * 2) * 4 + flicker;
+            ctx.fillStyle = fk % 2 === 0 ? "#f97316" : "#fde047";
+            ctx.beginPath();
+            ctx.moveTo(fx, 2);
+            ctx.quadraticCurveTo(fx - 4, -fh * 0.5, fx, -fh);
+            ctx.quadraticCurveTo(fx + 4, -fh * 0.5, fx, 2);
+            ctx.fill();
+          }
+          ctx.globalAlpha = 1;
         }
         ctx.restore();
       });
