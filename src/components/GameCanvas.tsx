@@ -1477,7 +1477,7 @@ export function GameCanvas({
       if (g.terrainCanvas) {
         const sx = Math.max(0, Math.floor(camOffset));
         const sw = Math.min(WORLD_W - sx, Math.ceil(VIEW_W) + 2);
-        ctx.drawImage(g.terrainCanvas, sx, 0, sw, CANVAS_H, sx - camOffset, 0, sw, CANVAS_H);
+        ctx.drawImage(g.terrainCanvas, sx, 0, sw, CANVAS_H, sx, 0, sw, CANVAS_H);
       }
 
       // Terrain ridge
