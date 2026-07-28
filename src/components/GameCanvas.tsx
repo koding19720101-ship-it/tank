@@ -114,7 +114,7 @@ interface TankState {
   slowPending: number;
   slowThisTurn: number;
   launch: { active: boolean; vy: number; vx?: number; isMoveShot?: boolean };
-  drilling?: { active: boolean; dir: number; until: number; lastTick: number };
+  drilling?: { active: boolean; dir: number; until: number; lastTick: number; depth: number };
   dead: boolean;
   tankId: TankId;
   bodyColor: string;
@@ -199,6 +199,7 @@ export function GameCanvas({
     tanks: buildInitialTanks(),
     projectiles: [] as Projectile[],
     hazards: [] as Hazard[],
+    caveHoles: [] as { x: number; y: number; radius: number }[],
     particles: [] as Particle[],
     turnOrder: turnOrder,
     activeSocketId: activeSocketId,
@@ -666,11 +667,19 @@ export function GameCanvas({
     if (!tank || tank.dead) return;
     const cdef = WEAPON_DEFS.cavern;
     const now = Date.now();
+    // 활성화 시점에 실제로 누르고 있는 이동 키를 우선 사용 (탱크가 뒤집혀서
+    // 반대편(이미 판 평평한 쪽)으로 파고드는 버그 방지)
+    let dir = tank.dir >= 0 ? 1 : -1;
+    if (socketId === mySocketId) {
+      if (g.keys["KeyA"]) dir = -1;
+      else if (g.keys["KeyD"]) dir = 1;
+    }
     tank.drilling = {
       active: true,
-      dir: tank.dir >= 0 ? 1 : -1,
+      dir,
       until: now + (cdef.caveDurationMs ?? 1800),
       lastTick: now,
+      depth: 0,
     };
   };
 
@@ -766,7 +775,8 @@ export function GameCanvas({
           const dy = y0 - y1;
           if (dy > 0) {
             const slopeAngleDeg = (Math.atan2(dy, 3) * 180) / Math.PI;
-            if (slopeAngleDeg >= 80) speedMultiplier = 0.5;
+            // 90도 미만이면 무조건 오를 수 있게, 가파를수록 서서히만 느려지도록 완화
+            speedMultiplier = Math.max(0.4, 1 - (slopeAngleDeg / 90) * 0.6);
           }
         }
 
@@ -811,11 +821,25 @@ export function GameCanvas({
       g.tanks.forEach(t => {
         if (t.dead || !t.drilling?.active) return;
         const cdef = WEAPON_DEFS.cavern;
+        const durationMs = cdef.caveDurationMs ?? 1800;
+        const maxDepth = cdef.caveMaxDepth ?? 90;
         t.x = Math.max(10, Math.min(WORLD_W - 10, t.x + (cdef.caveMoveSpeed ?? 3) * t.drilling!.dir));
         const rx = Math.round(Math.min(WORLD_W - 1, Math.max(0, t.x)));
-        // 전방 지형만 파괴 (뒤쪽은 그대로 남김)
-        destructTerrain(t.x + t.drilling!.dir * 18, t.y, (cdef.caveTunnelRadius ?? 30) * 0.7);
-        if (g.terrain[rx] !== undefined) t.y = g.terrain[rx];
+        const surfaceY = g.terrain[rx] ?? t.y;
+        // 시간이 지날수록 점점 더 깊이 파고들어감 (아래로 내려감)
+        const elapsed = durationMs - (t.drilling!.until - nowCave);
+        t.drilling!.depth = Math.min(maxDepth, Math.max(0, (elapsed / durationMs) * maxDepth));
+        t.y = surfaceY + t.drilling!.depth;
+
+        // 지형 자체(높이맵)는 건드리지 않고 별도의 '동굴 구멍'만 표시 →
+        // 위쪽 지형이 같이 사라지는 버그 방지
+        const holeRadius = (cdef.caveTunnelRadius ?? 30) * 0.85;
+        const holes = g.caveHoles;
+        const lastHole = holes[holes.length - 1];
+        if (!lastHole || Math.hypot(t.x - lastHole.x, t.y - lastHole.y) > holeRadius * 0.45) {
+          holes.push({ x: t.x, y: t.y, radius: holeRadius });
+          if (holes.length > 400) holes.shift();
+        }
         if (Math.random() < 0.4) spawnParticles(t.x + t.drilling!.dir * 14, t.y - 4, 2, 2, ["#a16207", "#78350f", "#d6a05a"]);
 
         if (nowCave - t.drilling!.lastTick >= 200) {
@@ -1375,6 +1399,22 @@ export function GameCanvas({
         else ctx.lineTo(x, g.terrain[x]);
       }
       ctx.strokeStyle = "#f2d9a8"; ctx.lineWidth = 2.5; ctx.stroke();
+
+      // Cave holes (동굴로 파낸 지하 터널 - 지형 높이맵은 그대로 두고 위에 구멍만 그려서
+      // 지표면(위쪽)이 같이 사라지는 버그 없이 표현)
+      g.caveHoles.forEach(h => {
+        if (h.x < camOffset - 80 || h.x > camOffset + VIEW_W + 80) return;
+        if (h.y < 140) return; // 지표면 위쪽(하늘)은 파내지 않음
+        ctx.save();
+        ctx.beginPath();
+        ctx.ellipse(h.x, h.y, h.radius, h.radius * 0.85, 0, 0, Math.PI * 2);
+        const holeGrad = ctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, h.radius);
+        holeGrad.addColorStop(0, "#241608");
+        holeGrad.addColorStop(1, "#4a2f14");
+        ctx.fillStyle = holeGrad;
+        ctx.fill();
+        ctx.restore();
+      });
 
       // Hazards
       g.hazards.forEach(h => {
