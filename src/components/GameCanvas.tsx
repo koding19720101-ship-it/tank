@@ -199,7 +199,7 @@ export function GameCanvas({
     tanks: buildInitialTanks(),
     projectiles: [] as Projectile[],
     hazards: [] as Hazard[],
-    caveHoles: [] as { x: number; y: number; radius: number }[],
+    terrainCanvas: null as HTMLCanvasElement | null,
     particles: [] as Particle[],
     turnOrder: turnOrder,
     activeSocketId: activeSocketId,
@@ -267,6 +267,23 @@ export function GameCanvas({
       terrain.push(Math.min(CANVAS_H - 20, Math.max(150, h)));
     }
     g.terrain = terrain;
+
+    // 실제 원형으로 뚫을 수 있는 오프스크린 지형 버퍼 생성
+    const buf = document.createElement("canvas");
+    buf.width = WORLD_W; buf.height = CANVAS_H;
+    const bctx = buf.getContext("2d");
+    if (bctx) {
+      bctx.beginPath(); bctx.moveTo(0, CANVAS_H);
+      for (let x = 0; x < WORLD_W; x++) bctx.lineTo(x, terrain[x]);
+      bctx.lineTo(WORLD_W, CANVAS_H); bctx.closePath();
+      const tGrad = bctx.createLinearGradient(0, 150, 0, CANVAS_H);
+      tGrad.addColorStop(0, "#e8c48a");
+      tGrad.addColorStop(0.35, "#c9975c");
+      tGrad.addColorStop(1, "#8a6238");
+      bctx.fillStyle = tGrad;
+      bctx.fill();
+    }
+    g.terrainCanvas = buf;
 
     // Place tanks on terrain
     g.tanks.forEach(t => {
@@ -372,22 +389,61 @@ export function GameCanvas({
   }, [socket, onGameEnded]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
+  // 지형에 실제 원형 구멍을 뚫는다 (오프스크린 버퍼에 destination-out으로 펀치한 뒤,
+  // 그 결과를 다시 스캔해서 높이맵을 갱신 — 삼각형/손가락 모양 대신 항상 진짜 원형 크레이터가 남음)
   const destructTerrain = (cx: number, cy: number, radius: number) => {
-    const t = G.current.terrain;
-    const start = Math.max(0, Math.floor(cx - radius));
-    const end = Math.min(WORLD_W - 1, Math.ceil(cx + radius));
-    for (let x = start; x <= end; x++) {
-      const dx = x - cx;
-      if (Math.abs(dx) < radius) {
-        const dy = Math.sqrt(radius * radius - dx * dx);
-        const targetY = cy + dy;
-        if (t[x] < targetY) t[x] = Math.min(CANVAS_H, Math.max(t[x], targetY));
+    const g = G.current;
+    const buf = g.terrainCanvas;
+    if (!buf) return;
+    const bctx = buf.getContext("2d");
+    if (!bctx) return;
+
+    bctx.save();
+    bctx.globalCompositeOperation = "destination-out";
+    bctx.beginPath();
+    bctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    bctx.fill();
+    bctx.restore();
+
+    const startX = Math.max(0, Math.floor(cx - radius - 2));
+    const endX = Math.min(WORLD_W - 1, Math.ceil(cx + radius + 2));
+    const w = endX - startX + 1;
+    if (w <= 0) return;
+    const scanTop = 130;
+    const scanH = CANVAS_H - scanTop;
+    let data: Uint8ClampedArray;
+    try {
+      data = bctx.getImageData(startX, scanTop, w, scanH).data;
+    } catch {
+      return;
+    }
+    for (let i = 0; i < w; i++) {
+      let topY = CANVAS_H;
+      for (let y = 0; y < scanH; y++) {
+        const alpha = data[(y * w + i) * 4 + 3];
+        if (alpha > 30) { topY = scanTop + y; break; }
       }
+      g.terrain[startX + i] = topY;
     }
   };
 
+  // 동굴(cavern) 전용 — 높이맵은 건드리지 않고 버퍼에만 구멍을 뚫어(지붕이 있는 실제 터널)
+  const punchVisualHole = (cx: number, cy: number, radius: number) => {
+    const buf = G.current.terrainCanvas;
+    if (!buf) return;
+    const bctx = buf.getContext("2d");
+    if (!bctx) return;
+    bctx.save();
+    bctx.globalCompositeOperation = "destination-out";
+    bctx.beginPath();
+    bctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    bctx.fill();
+    bctx.restore();
+  };
+
   const growTerrainMound = (cx: number, baseY: number, radius: number) => {
-    const t = G.current.terrain;
+    const g = G.current;
+    const t = g.terrain;
     const start = Math.max(0, Math.floor(cx - radius));
     const end = Math.min(WORLD_W - 1, Math.ceil(cx + radius));
     for (let x = start; x <= end; x++) {
@@ -396,6 +452,27 @@ export function GameCanvas({
         const dy = Math.sqrt(radius * radius - dx * dx);
         const targetY = baseY - dy * 0.6;
         if (t[x] > targetY) t[x] = targetY;
+      }
+    }
+    // 버퍼에도 흙을 다시 채워 시각적으로 언덕이 솟아오르도록 함
+    const buf = g.terrainCanvas;
+    if (buf) {
+      const bctx = buf.getContext("2d");
+      if (bctx) {
+        bctx.save();
+        bctx.globalCompositeOperation = "source-over";
+        const grad = bctx.createLinearGradient(0, baseY - radius, 0, CANVAS_H);
+        grad.addColorStop(0, "#e8c48a");
+        grad.addColorStop(0.35, "#c9975c");
+        grad.addColorStop(1, "#8a6238");
+        bctx.fillStyle = grad;
+        bctx.beginPath();
+        bctx.moveTo(start, CANVAS_H);
+        for (let x = start; x <= end; x++) bctx.lineTo(x, t[x]);
+        bctx.lineTo(end, CANVAS_H);
+        bctx.closePath();
+        bctx.fill();
+        bctx.restore();
       }
     }
   };
@@ -767,6 +844,7 @@ export function GameCanvas({
         const currX = Math.round(me.x);
         const y0 = g.terrain[currX] ?? 0;
         let speedMultiplier = 1;
+        let blockedByWall = false;
 
         if (g.keys["KeyA"] || g.keys["KeyD"]) {
           const targetDir = g.keys["KeyA"] ? -1 : 1;
@@ -775,16 +853,23 @@ export function GameCanvas({
           const dy = y0 - y1;
           if (dy > 0) {
             const slopeAngleDeg = (Math.atan2(dy, 3) * 180) / Math.PI;
-            // 90도 미만이면 무조건 오를 수 있게, 가파를수록 서서히만 느려지도록 완화
-            speedMultiplier = Math.max(0.4, 1 - (slopeAngleDeg / 90) * 0.6);
+            if (slopeAngleDeg >= 87) {
+              // 거의 수직인 벽은 오를 수 없음 (직각 벽을 타고 올라가던 버그 수정)
+              blockedByWall = true;
+            } else {
+              // 90도 미만이면 오를 수 있게, 가파를수록 서서히만 느려지도록
+              speedMultiplier = Math.max(0.4, 1 - (slopeAngleDeg / 90) * 0.6);
+            }
           }
         }
 
         const slowMultiplier = Math.max(0.15, 1 - 0.15 * me.slowThisTurn);
         const moveSpeed = 1.5 * slowMultiplier * speedMultiplier;
 
-        if (g.keys["KeyA"]) { me.x = Math.max(10, me.x - moveSpeed); me.dir = -1; moved = true; }
-        else if (g.keys["KeyD"]) { me.x = Math.min(WORLD_W - 10, me.x + moveSpeed); me.dir = 1; moved = true; }
+        if (!blockedByWall) {
+          if (g.keys["KeyA"]) { me.x = Math.max(10, me.x - moveSpeed); me.dir = -1; moved = true; }
+          else if (g.keys["KeyD"]) { me.x = Math.min(WORLD_W - 10, me.x + moveSpeed); me.dir = 1; moved = true; }
+        }
 
         if (moved) {
           me.fuel = Math.max(0, me.fuel - 30 * dt);
@@ -831,15 +916,9 @@ export function GameCanvas({
         t.drilling!.depth = Math.min(maxDepth, Math.max(0, (elapsed / durationMs) * maxDepth));
         t.y = surfaceY + t.drilling!.depth;
 
-        // 지형 자체(높이맵)는 건드리지 않고 별도의 '동굴 구멍'만 표시 →
-        // 위쪽 지형이 같이 사라지는 버그 방지
+        // 지형 높이맵은 건드리지 않고 버퍼에만 구멍을 뚫음 → 지붕이 있는 진짜 터널
         const holeRadius = (cdef.caveTunnelRadius ?? 30) * 0.85;
-        const holes = g.caveHoles;
-        const lastHole = holes[holes.length - 1];
-        if (!lastHole || Math.hypot(t.x - lastHole.x, t.y - lastHole.y) > holeRadius * 0.45) {
-          holes.push({ x: t.x, y: t.y, radius: holeRadius });
-          if (holes.length > 400) holes.shift();
-        }
+        punchVisualHole(t.x, t.y, holeRadius);
         if (Math.random() < 0.4) spawnParticles(t.x + t.drilling!.dir * 14, t.y - 4, 2, 2, ["#a16207", "#78350f", "#d6a05a"]);
 
         if (nowCave - t.drilling!.lastTick >= 200) {
@@ -979,7 +1058,21 @@ export function GameCanvas({
             toRemove.push(i);
             continue;
           }
-          p.x = Math.max(0, Math.min(WORLD_W - 1, p.x + (def.rollSpeed ?? 3.5) * (p.rollDir ?? 1)));
+          {
+            const stepDx = (def.rollSpeed ?? 3.5) * (p.rollDir ?? 1);
+            const prevY = p.y;
+            const tryX = Math.max(0, Math.min(WORLD_W - 1, p.x + stepDx));
+            const tryRx = Math.round(tryX);
+            const tryY = g.terrain[tryRx] ?? prevY;
+            const climbAngleDeg = (Math.atan2(prevY - tryY, Math.abs(stepDx) || 1) * 180) / Math.PI;
+            if (climbAngleDeg >= 87) {
+              // 거의 수직인 벽은 회전톱도 타고 올라갈 수 없음 — 벽에 막혀 멈춤
+              spawnParticles(p.x, p.y, 6, 2, ["#71717a", "#a1a1aa"]);
+              toRemove.push(i);
+              continue;
+            }
+            p.x = tryX;
+          }
           const rrx = Math.round(p.x);
           if (g.terrain[rrx] !== undefined) p.y = g.terrain[rrx];
           if (Math.random() < 0.5) spawnParticles(p.x, p.y - 2, 1, 1, ["#a1a1aa", "#d4d4d8"]);
@@ -1380,17 +1473,12 @@ export function GameCanvas({
       ctx.lineTo(camOffset + VIEW_W, CANVAS_H); ctx.closePath();
       ctx.fillStyle = "rgba(196,140,84,0.35)"; ctx.fill();
 
-      // Terrain fill
-      ctx.beginPath(); ctx.moveTo(camOffset, CANVAS_H);
-      for (let x = Math.max(0, Math.floor(camOffset)); x <= Math.min(WORLD_W - 1, Math.ceil(camOffset + VIEW_W)); x++) {
-        ctx.lineTo(x, g.terrain[x]);
+      // Terrain (실제 원형 구멍이 뚫리는 오프스크린 버퍼를 그대로 그림)
+      if (g.terrainCanvas) {
+        const sx = Math.max(0, Math.floor(camOffset));
+        const sw = Math.min(WORLD_W - sx, Math.ceil(VIEW_W) + 2);
+        ctx.drawImage(g.terrainCanvas, sx, 0, sw, CANVAS_H, sx - camOffset, 0, sw, CANVAS_H);
       }
-      ctx.lineTo(Math.min(WORLD_W - 1, camOffset + VIEW_W), CANVAS_H); ctx.closePath();
-      const tGrad = ctx.createLinearGradient(0, 150, 0, CANVAS_H);
-      tGrad.addColorStop(0, "#e8c48a");
-      tGrad.addColorStop(0.35, "#c9975c");
-      tGrad.addColorStop(1, "#8a6238");
-      ctx.fillStyle = tGrad; ctx.fill();
 
       // Terrain ridge
       ctx.beginPath();
@@ -1399,22 +1487,6 @@ export function GameCanvas({
         else ctx.lineTo(x, g.terrain[x]);
       }
       ctx.strokeStyle = "#f2d9a8"; ctx.lineWidth = 2.5; ctx.stroke();
-
-      // Cave holes (동굴로 파낸 지하 터널 - 지형 높이맵은 그대로 두고 위에 구멍만 그려서
-      // 지표면(위쪽)이 같이 사라지는 버그 없이 표현)
-      g.caveHoles.forEach(h => {
-        if (h.x < camOffset - 80 || h.x > camOffset + VIEW_W + 80) return;
-        if (h.y < 140) return; // 지표면 위쪽(하늘)은 파내지 않음
-        ctx.save();
-        ctx.beginPath();
-        ctx.ellipse(h.x, h.y, h.radius, h.radius * 0.85, 0, 0, Math.PI * 2);
-        const holeGrad = ctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, h.radius);
-        holeGrad.addColorStop(0, "#241608");
-        holeGrad.addColorStop(1, "#4a2f14");
-        ctx.fillStyle = holeGrad;
-        ctx.fill();
-        ctx.restore();
-      });
 
       // Hazards
       g.hazards.forEach(h => {
@@ -1761,7 +1833,7 @@ export function GameCanvas({
           // 드릴: 회색 삼각형이 진행 방향을 향한 채 빠르게 회전
           ctx.save();
           ctx.translate(p.x, p.y);
-          ctx.rotate(Date.now() * 0.03 + Math.atan2(p.vy, p.vx));
+          ctx.rotate(Math.atan2(p.vy, p.vx) + Date.now() * 0.006);
           ctx.fillStyle = "#9ca3af";
           ctx.strokeStyle = "#4b5563";
           ctx.lineWidth = 1;
