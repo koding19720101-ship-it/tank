@@ -1360,7 +1360,22 @@ export function GameCanvas({
           const elapsed = Date.now() - (h.blackholeStartedAt ?? h.plantedAt);
           const progress = Math.min(1, elapsed / BLACKHOLE_DURATION_MS);
           const r = BLACKHOLE_MAX_RADIUS * progress;
+          const spinT = Date.now() * 0.003;
           ctx.save();
+
+          // 소용돌이치는 강착원반(accretion disk) — 회전하는 보라색 나선 줄무늬
+          ctx.save();
+          ctx.rotate(spinT);
+          for (let ring = 0; ring < 3; ring++) {
+            const ringR = r * (1.3 + ring * 0.55);
+            ctx.strokeStyle = `rgba(196,181,253,${0.35 - ring * 0.09})`;
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.arc(0, 0, ringR, ring * 0.6, ring * 0.6 + Math.PI * 1.3);
+            ctx.stroke();
+          }
+          ctx.restore();
+
           const bhGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
           bhGrad.addColorStop(0, "rgba(0,0,0,1)");
           bhGrad.addColorStop(0.7, "rgba(30,10,50,0.9)");
@@ -1369,10 +1384,31 @@ export function GameCanvas({
           ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
           ctx.strokeStyle = "rgba(196,181,253,0.6)"; ctx.lineWidth = 1.5;
           ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.stroke();
-          if (Math.random() < 0.5) {
-            const a = Math.random() * Math.PI * 2;
-            const d = BLACKHOLE_PULL_RADIUS * (0.6 + Math.random() * 0.4);
-            g.particles.push({ x: h.x + Math.cos(a) * d, y: (h.y - 3) + Math.sin(a) * d * 0.4, vx: -Math.cos(a) * 2, vy: -Math.sin(a) * 1, color: "#a78bfa", radius: Math.random() * 2 + 1, life: 0, maxLife: 20 });
+
+          // 빨려 들어가는 파편: 바깥쪽에서 나선형으로 중심을 향해 회전하며 빨려들어감
+          for (let s = 0; s < 3; s++) {
+            if (Math.random() < 0.85) {
+              const a = Math.random() * Math.PI * 2;
+              const d = BLACKHOLE_PULL_RADIUS * (0.55 + Math.random() * 0.5);
+              const px = h.x + Math.cos(a) * d;
+              const py = (h.y - 3) + Math.sin(a) * d * 0.4;
+              // 반경 방향(안쪽) + 접선 방향(회전) 속도를 합쳐 소용돌이 궤적을 만듦
+              const inwardVx = -Math.cos(a) * 2.6;
+              const inwardVy = -Math.sin(a) * 1.3;
+              const tangentVx = -Math.sin(a) * 1.8;
+              const tangentVy = Math.cos(a) * 0.9;
+              g.particles.push({
+                x: px, y: py,
+                vx: inwardVx + tangentVx, vy: inwardVy + tangentVy,
+                color: Math.random() < 0.6 ? "#a78bfa" : (Math.random() < 0.5 ? "#1e1033" : "#ddd6fe"),
+                radius: Math.random() * 2.5 + 1, life: 0, maxLife: 22,
+              });
+            }
+          }
+          // 중심부 근처의 밝은 섬광(이벤트 호라이즌 반짝임)
+          if (Math.random() < 0.3) {
+            const a2 = Math.random() * Math.PI * 2;
+            g.particles.push({ x: h.x + Math.cos(a2) * r * 0.3, y: (h.y - 3) + Math.sin(a2) * r * 0.15, vx: 0, vy: 0, color: "#f5f3ff", radius: Math.random() * 1.5 + 0.5, life: 0, maxLife: 8 });
           }
           ctx.restore();
         }
