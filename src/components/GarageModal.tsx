@@ -188,6 +188,12 @@ export function GarageModal({ onClose, currentTankId, onSelectTank, tankStats }:
                           ? `개당 ${w.splitDamage}뎀 · 화상(장시간)`
                           : wid === "hellfire"
                           ? `데미지 ${w.maxDmg} · 지연 폭발 · 광역 화상`
+                          : wid === "satellite"
+                          ? `초당 ${w.beamDmgPerSec}뎀 · 성장형 레이저 빔`
+                          : wid === "constellation"
+                          ? `직격 ${w.maxDmg}뎀 · 연결선 ${w.lineDamage}뎀 · ${w.orbCount}연발`
+                          : wid === "supernova"
+                          ? `데미지 ${w.maxDmg} · 연쇄폭발 ${w.chainCount}회`
                           : w.splitCount
                           ? `분열 ${w.splitCount}갈래 · 개당 ${w.splitDamage}뎀`
                           : `데미지 ${w.maxDmg}`}
@@ -244,6 +250,9 @@ function weaponDesc(wid: string): string {
     case "flamethrower": return "전방을 향해 즉시 화염을 내뿜는 근거리 무기입니다. 닿은 대상에게 피해를 주며 불을 붙입니다. 세계수의 나무나 덩쿨탄의 덩쿨도 태워 없앨 수 있습니다.";
     case "volcano": return "불타는 덩어리 5발을 흩뿌립니다. 적중한 대상은 일반 소이탄보다 오랫동안 불이 붙어 지속 피해를 입습니다. 나무나 덩쿨도 태워 없앨 수 있습니다.";
     case "hellfire": return "회색의 길쭉한 탄입니다. 지형에 꽂히면 즉시 터지지 않고 점점 붉게 달아오르다가 잠시 후 넓은 범위에 큰 폭발을 일으키며 불을 붙입니다. 나무나 덩쿨도 태워 없앨 수 있습니다.";
+    case "satellite": return "보라색 탄을 발사하면 착탄 지점 위에서 레이저 빔이 내려옵니다. 빔은 점점 커지며 지형을 파괴하고, 빔에 닿아있는 동안 초당 10 피해를 입습니다.";
+    case "constellation": return "빛나는 하얀 탄 7발을 연속으로 발사합니다. 탄들은 발사 순서대로 하얀 선으로 서로 이어져 있으며, 탄에 직격당하면 8 피해, 연결선에 닿기만 해도 3 피해를 입습니다.";
+    case "supernova": return "하얀빛으로 빛나는 탄환입니다. 무언가에 닿으면 그 지점 주변에서 무작위 방향으로 연쇄 폭발이 총 7회 발생합니다.";
     default: return "";
   }
 }
