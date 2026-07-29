@@ -69,7 +69,7 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   heavy: { label: "해비탄 💣", color: "#ef4444", radius: 42, maxDmg: 20 },
   sniper: { label: "저격탄 ⚡", color: "#60a5fa", radius: 18, maxDmg: 20 },
   cluster: { label: "집속탄 ✴️", color: "#a78bfa", radius: 22, maxDmg: 8, splitCount: 3, splitDamage: 5, splitDelay: 45, spreadFactor: 1.7 },
-  buckshot: { label: "집속탄 🔹", color: "#38bdf8", radius: 16, maxDmg: 6, splitCount: 5, splitDamage: 6, splitDelay: 2, splitAngleDeg: 30 },
+  buckshot: { label: "집속탄 🔹", color: "#38bdf8", radius: 16, maxDmg: 6, splitCount: 10, splitDamage: 6, splitDelay: 2, splitAngleDeg: 20 },
   incendiary: { label: "소이탄 🔥", color: "#f97316", radius: 16, maxDmg: 3, splitCount: 5, splitDamage: 3, splitDelay: 2, splitAngleDeg: 30, incendiary: true },
   mine: { label: "지뢰 💠", color: "#84cc16", radius: 34, maxDmg: 20, groundEffect: "mine" },
   vine: { label: "덩쿨탄 🌿", color: "#65a30d", radius: 16, maxDmg: 2, splitCount: 5, splitDamage: 2, splitDelay: 2, spreadFactor: 1.05, groundEffect: "vine" },

@@ -100,6 +100,14 @@ interface Particle {
   life: number; maxLife: number;
 }
 
+interface Crate {
+  id: string;
+  x: number;
+  y: number;
+  vy: number;
+  landed: boolean;
+}
+
 interface TankState {
   socketId: string;
   team: "red" | "blue";
@@ -115,6 +123,8 @@ interface TankState {
   slowThisTurn: number;
   launch: { active: boolean; vy: number; vx?: number; isMoveShot?: boolean };
   drilling?: { active: boolean; dir: number; until: number; lastTick: number; depth: number };
+  shield: boolean;
+  bonusWeapon: WeaponId | null;
   dead: boolean;
   tankId: TankId;
   bodyColor: string;
@@ -149,6 +159,15 @@ const BLACKHOLE_DMG_PER_SEC = 7;
 const BLACKHOLE_TICK_MS = 500;
 const BLACKHOLE_MAX_RADIUS = 85;
 const BLACKHOLE_PULL_RADIUS = 140;
+const CRATE_PICKUP_RADIUS = 20;
+
+// 두 클라이언트가 동일한 보급 상자 스케줄(딜레이/위치/보상)을 갖도록 하는 결정론적 시드 난수
+// (initialSeed + 상자 순번으로 계산 — 네트워크 동기화 없이도 양쪽 화면에 같은 상자가 뜸)
+function seededRand(seed: number, step: number): number {
+  let x = Math.sin(seed * 12.9898 + step * 78.233) * 43758.5453;
+  x = x - Math.floor(x);
+  return x;
+}
 
 export function GameCanvas({
   socket,
@@ -182,6 +201,8 @@ export function GameCanvas({
         slowPending: 0,
         slowThisTurn: 0,
         launch: { active: false, vy: 0 },
+        shield: false,
+        bonusWeapon: null,
         dead: false,
         tankId,
         bodyColor: tankDef.bodyColor,
@@ -233,6 +254,9 @@ export function GameCanvas({
       x: number; y: number; ownerSocketId: string; delay: number;
     }>,
     constellationLineHits: new Set<string>(),
+    crate: null as Crate | null,
+    nextCrateAt: 0,
+    crateSeedStep: 0,
     // Camera
     camX: 0,
     camTargetX: 0,
@@ -254,6 +278,9 @@ export function GameCanvas({
   const [uiTankHps, setUiTankHps] = useState<Record<string, number>>(() =>
     Object.fromEntries(allPlayers.map(p => [p.socketId, TANKS[p.profile.tankId ?? DEFAULT_TANK_ID].maxHp]))
   );
+  const [uiCrateMsg, setUiCrateMsg] = useState<string | null>(null);
+  const [uiMyShield, setUiMyShield] = useState(false);
+  const [uiMyBonusWeapon, setUiMyBonusWeapon] = useState<WeaponId | null>(null);
 
   // ── Terrain generation (확장 맵 2400px) ─────────────────────────────────
   useEffect(() => {
@@ -292,6 +319,9 @@ export function GameCanvas({
     const holesBuf = document.createElement("canvas");
     holesBuf.width = WORLD_W; holesBuf.height = CANVAS_H;
     g.holesCanvas = holesBuf;
+
+    // 보급 상자: 30~60초 사이 무작위 시점에 첫 상자 예약 (시드 기반이라 양쪽 클라이언트가 동일)
+    g.nextCrateAt = Date.now() + (30 + seededRand(initialSeed, g.crateSeedStep) * 30) * 1000;
 
     // Place tanks on terrain
     g.tanks.forEach(t => {
@@ -663,6 +693,15 @@ export function GameCanvas({
     if (dmg <= 0) return;
     const tank = g.tanks.find(t => t.socketId === socketId);
     if (!tank || tank.dead) return;
+
+    // 쉴드: 다음 피격 1회를 완전히 무효화
+    if (tank.shield) {
+      tank.shield = false;
+      if (socketId === mySocketId) setUiMyShield(false);
+      spawnParticles(tank.x, tank.y - 10, 18, 3, ["#7dd3fc", "#38bdf8", "#fff"]);
+      return;
+    }
+
     const newHp = Math.max(0, tank.hp - dmg);
     tank.hp = newHp;
 
@@ -745,6 +784,42 @@ export function GameCanvas({
   const handleExplosion = (p: Projectile) => {
     if (p.x < 0 || p.x >= WORLD_W) return;
     explodeAt(p.x, p.y, p.type, !!p.isSplit);
+  };
+
+  // ── 보급 상자 획득: 무작위 탄 1회 / 쉴드 1회 / 연료 +30 중 하나 지급 ──────────
+  const collectCrate = (socketId: string) => {
+    const g = G.current;
+    const crate = g.crate;
+    if (!crate) return;
+    const tank = g.tanks.find(t => t.socketId === socketId);
+    if (!tank || tank.dead) return;
+
+    spawnParticles(crate.x, crate.y - 6, 22, 3, ["#fbbf24", "#fde68a", "#fff"]);
+    const roll = Math.random();
+    if (roll < 1 / 3) {
+      const allWeapons = Object.keys(WEAPON_DEFS) as WeaponId[];
+      const pick = allWeapons[Math.floor(Math.random() * allWeapons.length)];
+      tank.bonusWeapon = pick;
+      if (socketId === mySocketId) {
+        setUiMyBonusWeapon(pick);
+        setUiCrateMsg(`보급 상자: ${WEAPON_DEFS[pick].label} 1회 획득!`);
+      }
+    } else if (roll < 2 / 3) {
+      tank.shield = true;
+      if (socketId === mySocketId) {
+        setUiMyShield(true);
+        setUiCrateMsg("보급 상자: 쉴드 획득! (다음 피격 1회 무효)");
+      }
+    } else {
+      tank.fuel = Math.min(tank.maxFuel, tank.fuel + 30);
+      if (socketId === mySocketId) {
+        setUiMyFuel(Math.round(tank.fuel));
+        setUiCrateMsg("보급 상자: 연료 +30!");
+      }
+    }
+    g.crate = null;
+    g.crateSeedStep++;
+    g.nextCrateAt = Date.now() + (30 + seededRand(initialSeed, g.crateSeedStep) * 30) * 1000;
   };
 
   // ── 이동탄(moveshot): 자신의 몸이 포탄 대신 날아감 ────────────────────────
@@ -984,7 +1059,30 @@ export function GameCanvas({
         if (nowCave >= t.drilling!.until) t.drilling!.active = false;
       });
 
-      // ─ Burn DOT ─
+      // ─ 보급 상자: 스폰/낙하/픽업 ─
+      if (!g.crate && Date.now() >= g.nextCrateAt) {
+        const rx0 = 80 + seededRand(initialSeed, g.crateSeedStep + 1000) * (WORLD_W - 160);
+        g.crate = { id: Math.random().toString(36).slice(2), x: rx0, y: 0, vy: 0, landed: false };
+      }
+      if (g.crate && !g.crate.landed) {
+        g.crate.vy += GRAVITY * 0.7;
+        g.crate.y += g.crate.vy;
+        const crx = Math.round(Math.min(WORLD_W - 1, Math.max(0, g.crate.x)));
+        const groundY = g.terrain[crx];
+        if (groundY !== undefined && g.crate.y >= groundY) {
+          g.crate.y = groundY;
+          g.crate.landed = true;
+          spawnParticles(g.crate.x, g.crate.y, 10, 2, ["#c9975c", "#8a6238"]);
+        }
+      }
+      if (g.crate && g.crate.landed) {
+        for (const t of g.tanks) {
+          if (t.dead) continue;
+          if (Math.abs(t.x - g.crate.x) < CRATE_PICKUP_RADIUS) { collectCrate(t.socketId); break; }
+        }
+      }
+
+
       const now2 = Date.now();
       g.tanks.forEach(t => {
         if (!t.burn || t.dead) return;
@@ -1693,7 +1791,28 @@ export function GameCanvas({
         ctx.restore();
       });
 
-      // Constellation connecting lines
+      // 보급 상자
+      if (g.crate && g.crate.x > camOffset - 40 && g.crate.x < camOffset + VIEW_W + 40) {
+        ctx.save();
+        ctx.translate(g.crate.x, g.crate.y - 9);
+        if (!g.crate.landed) ctx.rotate(Math.sin(Date.now() * 0.01) * 0.15);
+        else ctx.translate(0, Math.sin(Date.now() * 0.004) * 1.5);
+        ctx.fillStyle = "#b45309";
+        ctx.beginPath(); ctx.roundRect(-11, -11, 22, 22, 3); ctx.fill();
+        ctx.strokeStyle = "#78350f"; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-11, 0); ctx.lineTo(11, 0); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, -11); ctx.lineTo(0, 11); ctx.stroke();
+        ctx.fillStyle = "#fde68a";
+        ctx.font = "bold 12px system-ui"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("?", 0, 0);
+        ctx.restore();
+        if (g.crate.landed && Math.random() < 0.15) {
+          g.particles.push({ x: g.crate.x + (Math.random() - 0.5) * 18, y: g.crate.y - 14, vx: 0, vy: -0.3, color: "#fde68a", radius: Math.random() * 1.5 + 0.5, life: 0, maxLife: 20 });
+        }
+      }
+
+
       {
         const csOrbs = g.projectiles.filter(p => p.type === "constellation");
         if (csOrbs.length >= 2) {
@@ -1782,6 +1901,19 @@ export function GameCanvas({
           ctx.beginPath(); ctx.arc(tx, ty - 16, 5, 0, Math.PI * 2);
           ctx.fillStyle = "#f97316"; ctx.fill();
           ctx.globalAlpha = 1; ctx.restore();
+        }
+
+        // 쉴드 이펙트: 탱크를 감싸는 옅은 하늘색 보호막
+        if (tank.shield) {
+          ctx.save();
+          ctx.translate(tx, ty - 8);
+          ctx.globalAlpha = 0.55 + Math.sin(Date.now() / 200) * 0.15;
+          ctx.strokeStyle = "#38bdf8"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.ellipse(0, 0, 20, 15, 0, 0, Math.PI * 2); ctx.stroke();
+          ctx.globalAlpha = 0.15;
+          ctx.fillStyle = "#7dd3fc"; ctx.fill();
+          ctx.globalAlpha = 1;
+          ctx.restore();
         }
 
         // Aim guide (only for this client's tank on their turn)
@@ -2007,6 +2139,13 @@ export function GameCanvas({
     return () => cancelAnimationFrame(raf);
   }, [socket, roomName, myProfile, initialSeed, onGameEnded]);
 
+  // ── Crate toast auto-dismiss ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!uiCrateMsg) return;
+    const id = setTimeout(() => setUiCrateMsg(null), 2600);
+    return () => clearTimeout(id);
+  }, [uiCrateMsg]);
+
   // ── Mouse & Touch Aiming ────────────────────────────────────────────────
   const isPointerDownRef = useRef(false);
 
@@ -2036,6 +2175,7 @@ export function GameCanvas({
     const me = g.tanks.find(t => t.socketId === mySocketId);
     if (!me || me.dead) return;
     g.firedThisTurn = true;
+    const usedBonusWeapon = !!me.bonusWeapon && g.weapon === me.bonusWeapon;
     if (WEAPON_DEFS[g.weapon].isMoveShot) {
       launchMoveShot(mySocketId, g.angle, g.power);
     } else {
@@ -2045,6 +2185,12 @@ export function GameCanvas({
       roomName,
       action: { type: "fire", x: me.x, y: me.y, angle: g.angle, power: g.power, weapon: g.weapon, socketId: mySocketId },
     });
+    if (usedBonusWeapon) {
+      me.bonusWeapon = null;
+      setUiMyBonusWeapon(null);
+      g.weapon = myWeapons[0];
+      setUiWeapon(myWeapons[0]);
+    }
   };
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -2067,8 +2213,10 @@ export function GameCanvas({
   const cycleWeapon = () => {
     const g = G.current;
     if (!g.isMyTurn) return;
-    const idx = myWeapons.indexOf(g.weapon);
-    const next = myWeapons[(idx + 1) % myWeapons.length];
+    const me = g.tanks.find(t => t.socketId === mySocketId);
+    const pool = me?.bonusWeapon ? [...myWeapons, me.bonusWeapon] : myWeapons;
+    const idx = pool.indexOf(g.weapon);
+    const next = pool[(idx + 1) % pool.length];
     g.weapon = next; setUiWeapon(next);
   };
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => { e.preventDefault(); cycleWeapon(); };
@@ -2158,6 +2306,23 @@ export function GameCanvas({
           onTouchMove={handleCanvasTouchMove}
           onWheel={handleWheel}
         />
+        {(uiMyShield || uiMyBonusWeapon) && (
+          <div style={{ position: "absolute", top: "8px", left: "8px", display: "flex", gap: "6px", pointerEvents: "none" }}>
+            {uiMyShield && (
+              <div style={{ background: "rgba(56,189,248,0.85)", color: "#0c1e2e", fontSize: "11px", fontWeight: "bold", padding: "3px 8px", borderRadius: "6px" }}>🛡️ 쉴드</div>
+            )}
+            {uiMyBonusWeapon && (
+              <div style={{ background: "rgba(251,191,36,0.9)", color: "#3b2a06", fontSize: "11px", fontWeight: "bold", padding: "3px 8px", borderRadius: "6px" }}>
+                🎁 {WEAPON_DEFS[uiMyBonusWeapon].label}
+              </div>
+            )}
+          </div>
+        )}
+        {uiCrateMsg && (
+          <div style={{ position: "absolute", top: "8px", left: "50%", transform: "translateX(-50%)", background: "rgba(15,23,42,0.9)", border: "1px solid rgba(251,191,36,0.5)", color: "#fde68a", fontSize: "12px", fontWeight: "bold", padding: "6px 14px", borderRadius: "20px", whiteSpace: "nowrap", pointerEvents: "none" }}>
+            {uiCrateMsg}
+          </div>
+        )}
       </div>
 
       {/* Control Bar */}
