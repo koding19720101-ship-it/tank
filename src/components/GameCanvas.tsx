@@ -200,6 +200,7 @@ export function GameCanvas({
     projectiles: [] as Projectile[],
     hazards: [] as Hazard[],
     terrainCanvas: null as HTMLCanvasElement | null,
+    holesCanvas: null as HTMLCanvasElement | null,
     particles: [] as Particle[],
     turnOrder: turnOrder,
     activeSocketId: activeSocketId,
@@ -285,6 +286,12 @@ export function GameCanvas({
       bctx.fill();
     }
     g.terrainCanvas = buf;
+
+    // 구멍(크레이터) 안쪽에 어두운 음영을 깔아줄 별도 버퍼 — 지형 버퍼보다 아래에 그려져
+    // 뚫린 자리가 뒤쪽으로 움푹 패인 것처럼 보이게 함
+    const holesBuf = document.createElement("canvas");
+    holesBuf.width = WORLD_W; holesBuf.height = CANVAS_H;
+    g.holesCanvas = holesBuf;
 
     // Place tanks on terrain
     g.tanks.forEach(t => {
@@ -390,6 +397,24 @@ export function GameCanvas({
   }, [socket, onGameEnded]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
+  // 구멍 안쪽에 어두운 그림자를 누적으로 칠해 "패인 구멍"처럼 보이게 함
+  const paintHoleShadow = (cx: number, cy: number, radius: number) => {
+    const buf = G.current.holesCanvas;
+    if (!buf) return;
+    const hctx = buf.getContext("2d");
+    if (!hctx) return;
+    hctx.save();
+    const grad = hctx.createRadialGradient(cx, cy, radius * 0.15, cx, cy, radius * 1.05);
+    grad.addColorStop(0, "rgba(20,12,6,0.95)");
+    grad.addColorStop(0.55, "rgba(35,22,10,0.85)");
+    grad.addColorStop(1, "rgba(35,22,10,0)");
+    hctx.fillStyle = grad;
+    hctx.beginPath();
+    hctx.arc(cx, cy, radius * 1.05, 0, Math.PI * 2);
+    hctx.fill();
+    hctx.restore();
+  };
+
   // 지형에 실제 원형 구멍을 뚫는다 (오프스크린 버퍼에 destination-out으로 펀치한 뒤,
   // 그 결과를 다시 스캔해서 높이맵을 갱신 — 삼각형/손가락 모양 대신 항상 진짜 원형 크레이터가 남음)
   const destructTerrain = (cx: number, cy: number, radius: number) => {
@@ -399,6 +424,7 @@ export function GameCanvas({
     const bctx = buf.getContext("2d");
     if (!bctx) return;
 
+    paintHoleShadow(cx, cy, radius);
     bctx.save();
     bctx.globalCompositeOperation = "destination-out";
     bctx.beginPath();
@@ -434,6 +460,7 @@ export function GameCanvas({
     if (!buf) return;
     const bctx = buf.getContext("2d");
     if (!bctx) return;
+    paintHoleShadow(cx, cy, radius);
     bctx.save();
     bctx.globalCompositeOperation = "destination-out";
     bctx.beginPath();
@@ -474,6 +501,22 @@ export function GameCanvas({
         bctx.closePath();
         bctx.fill();
         bctx.restore();
+      }
+    }
+    // 흙이 다시 채워진 자리는 더 이상 구멍이 아니므로 어두운 그림자도 함께 지움
+    const holesBuf = g.holesCanvas;
+    if (holesBuf) {
+      const hctx = holesBuf.getContext("2d");
+      if (hctx) {
+        hctx.save();
+        hctx.globalCompositeOperation = "destination-out";
+        hctx.beginPath();
+        hctx.moveTo(start, CANVAS_H);
+        for (let x = start; x <= end; x++) hctx.lineTo(x, t[x]);
+        hctx.lineTo(end, CANVAS_H);
+        hctx.closePath();
+        hctx.fill();
+        hctx.restore();
       }
     }
   };
@@ -821,8 +864,14 @@ export function GameCanvas({
       const activeTank = g.tanks.find(t => t.socketId === g.activeSocketId && !t.dead);
       const flyingMoveTank = g.tanks.find(t => t.launch.active && t.launch.isMoveShot);
       const drillingTank = g.tanks.find(t => t.drilling?.active);
+      const activeBlackhole = g.hazards.find(h => h.kind === "blackhole");
+      const activeBeam = g.hazards.find(h => h.kind === "beam");
       let targetCamX = g.camTargetX;
-      if (flyingMoveTank) {
+      if (activeBlackhole) {
+        targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, activeBlackhole.x - VIEW_W / 2));
+      } else if (activeBeam) {
+        targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, activeBeam.x - VIEW_W / 2));
+      } else if (flyingMoveTank) {
         targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, flyingMoveTank.x - VIEW_W / 2));
       } else if (drillingTank) {
         targetCamX = Math.max(0, Math.min(WORLD_W - VIEW_W, drillingTank.x - VIEW_W / 2));
@@ -1480,6 +1529,10 @@ export function GameCanvas({
         const sx = Math.max(0, Math.floor(camOffset));
         const sw = Math.min(WORLD_W - sx, Math.ceil(VIEW_W) + 2);
         ctx.imageSmoothingEnabled = false;
+        // 구멍 안쪽 어두운 그림자를 지형보다 먼저 그려 뚫린 부분이 패인 것처럼 보이게 함
+        if (g.holesCanvas) {
+          ctx.drawImage(g.holesCanvas, sx, 0, sw, CANVAS_H, sx, 0, sw, CANVAS_H);
+        }
         ctx.drawImage(g.terrainCanvas, sx, 0, sw, CANVAS_H, sx, 0, sw, CANVAS_H);
         ctx.imageSmoothingEnabled = true;
       }
