@@ -1372,12 +1372,10 @@ export function GameCanvas({
             const elapsed = nowB - h.plantedAt;
             const growProgress = Math.min(1, elapsed / Math.max(1, total * 0.4));
             h.beamWidth = (satDef.beamMaxWidth ?? 70) * growProgress;
-            // 매 프레임 무거운 높이맵 재스캔을 하지 않도록 시각 전용 펀치만 사용 (랙/시차 원인 제거)
-            if (Math.random() < 0.6) punchVisualHole(h.x, h.y, (h.beamWidth ?? 10) * 0.5);
+            // 매 프레임 실제 지형 높이맵까지 함께 갱신 (시각 구멍과 능선(라인)이 항상 일치하도록)
+            destructTerrain(h.x, h.y, (h.beamWidth ?? 10) * 0.5);
             if (nowB - (h.beamLastTick ?? 0) >= BEAM_TICK_MS) {
               h.beamLastTick = nowB;
-              // 틱마다 한 번만 실제 높이맵을 갱신 (성능 확보 + 지형-라인 불일치 방지)
-              destructTerrain(h.x, h.y, (h.beamWidth ?? 10) * 0.5);
               g.tanks.forEach(tank => {
                 if (tank.dead) return;
                 if (Math.abs(tank.x - h.x) < (h.beamWidth ?? 10) / 2 + 12) {
@@ -1569,17 +1567,17 @@ export function GameCanvas({
           const total = (h.beamUntil ?? Date.now()) - h.plantedAt;
           const fadeAlpha = Math.max(0, Math.min(1, (total - elapsed) / Math.max(1, total * 0.25)));
           ctx.save();
-          ctx.globalAlpha = 0.75 * Math.max(0.35, fadeAlpha);
+          ctx.globalAlpha = 0.9 * Math.max(0.45, fadeAlpha);
           const beamGrad = ctx.createLinearGradient(0, -CANVAS_H, 0, 0);
-          beamGrad.addColorStop(0, "rgba(167,139,250,0)");
-          beamGrad.addColorStop(0.4, "rgba(167,139,250,0.55)");
-          beamGrad.addColorStop(1, "rgba(221,214,254,0.85)");
+          beamGrad.addColorStop(0, "rgba(88,28,135,0)");
+          beamGrad.addColorStop(0.35, "rgba(109,40,217,0.75)");
+          beamGrad.addColorStop(1, "rgba(139,92,246,0.95)");
           ctx.fillStyle = beamGrad;
           ctx.fillRect(-w / 2, -CANVAS_H, Math.max(2, w), CANVAS_H);
-          ctx.strokeStyle = "#a78bfa"; ctx.lineWidth = 1.5;
+          ctx.strokeStyle = "#6d28d9"; ctx.lineWidth = 2;
           ctx.strokeRect(-w / 2, -CANVAS_H, Math.max(2, w), CANVAS_H);
           if (Math.random() < 0.4) {
-            g.particles.push({ x: h.x + (Math.random() - 0.5) * w, y: 0, vx: 0, vy: -1, color: "#a78bfa", radius: Math.random() * 2 + 1, life: 0, maxLife: 12 });
+            g.particles.push({ x: h.x + (Math.random() - 0.5) * w, y: 0, vx: 0, vy: -1, color: "#7c3aed", radius: Math.random() * 2 + 1, life: 0, maxLife: 12 });
           }
           void satDef;
           ctx.restore();
