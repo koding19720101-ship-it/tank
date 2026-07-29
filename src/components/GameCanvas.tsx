@@ -33,7 +33,18 @@ interface GameCanvasProps {
   turnOrder: string[];
   activeSocketId: string;
   mode: GameMode;
-  onGameEnded: (reason: string) => void;
+  onGameEnded: (reason: string, mvp?: MvpEntry[]) => void;
+}
+
+export interface MvpEntry {
+  key: string;
+  label: string;
+  icon: string;
+  value: number;
+  unit: string;
+  name: string;
+  image: string;
+  tankId: TankId;
 }
 
 interface Projectile {
@@ -141,6 +152,7 @@ const BURN_DMG_PER_TICK = 2;
 const BURN_TICKS = 4;
 const GROUND_FIRE_DMG_PER_TICK = 3;
 const GROUND_FIRE_TICK_MS = 700;
+const TERRAIN_PX2_TO_M2 = 0.025; // 지형 파괴 면적(px²) -> m² 환산 계수
 const MINE_TRIGGER_RADIUS = 13;
 const TREE_CONVERT_MS = 4000;
 const TREE_BOUNCE_VY = -7.5;
@@ -181,6 +193,42 @@ export function GameCanvas({
   onGameEnded,
 }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // 게임 종료시 MVP(카테고리별 최고 기록) 계산
+  const computeMvp = (): MvpEntry[] => {
+    const g = G.current as any;
+    const stats: Record<string, { dmgDealt: number; dmgTaken: number; distance: number; supplies: number; terrainArea: number }> = g.stats || {};
+    const categories: { key: string; label: string; icon: string; field: keyof typeof stats[string]; unit: string; round?: boolean }[] = [
+      { key: "dmgDealt", label: "최다 피해", icon: "⚔️", field: "dmgDealt", unit: "dmg", round: true },
+      { key: "dmgTaken", label: "최다 피격", icon: "🛡️", field: "dmgTaken", unit: "dmg", round: true },
+      { key: "distance", label: "최다 주행거리", icon: "🏁", field: "distance", unit: "m" },
+      { key: "supplies", label: "최다 보급상자 획득", icon: "📦", field: "supplies", unit: "개", round: true },
+      { key: "terrainArea", label: "최다 지형 파괴", icon: "💥", field: "terrainArea", unit: "㎡" },
+    ];
+    const entries: MvpEntry[] = [];
+    for (const cat of categories) {
+      let bestId: string | null = null;
+      let bestVal = -1;
+      for (const p of allPlayers) {
+        const v = (stats[p.socketId]?.[cat.field] as number) ?? 0;
+        if (v > bestVal) { bestVal = v; bestId = p.socketId; }
+      }
+      if (!bestId || bestVal <= 0) continue;
+      const player = allPlayers.find(p => p.socketId === bestId);
+      if (!player) continue;
+      entries.push({
+        key: cat.key,
+        label: cat.label,
+        icon: cat.icon,
+        value: cat.round ? Math.round(bestVal) : Math.round(bestVal * 10) / 10,
+        unit: cat.unit,
+        name: player.profile?.name ?? "플레이어",
+        image: player.profile?.image ?? "",
+        tankId: player.profile?.tankId ?? DEFAULT_TANK_ID,
+      });
+    }
+    return entries;
+  };
 
   // Build initial tank states
   const buildInitialTanks = (): TankState[] => {
@@ -426,16 +474,43 @@ export function GameCanvas({
 
     const onEnded = ({ reason }: { reason: string }) => {
       G.current.gameOver = true;
-      onGameEnded(reason);
+      onGameEnded(reason, computeMvp());
+    };
+
+    // 상대가 접속을 끊고 나갔을 때 — 실제 게임 종료(game-ended)는 서버가 잠시 지연시켜
+    // 보내주므로, 그 사이에 여기서 사망 애니메이션(코스모라면 블랙홀 패시브 포함)을 재생함
+    const onOpponentLeft = ({ deadSocketId }: { deadSocketId: string }) => {
+      const g = G.current;
+      const tank = g.tanks.find(t => t.socketId === deadSocketId);
+      if (!tank || tank.dead) return;
+      tank.hp = 0;
+      tank.dead = true;
+      setUiTankHps(prev => ({ ...prev, [deadSocketId]: 0 }));
+      if (deadSocketId === mySocketId) setUiMyHp(0);
+      spawnParticles(tank.x, tank.y, 40, 6, ["#ef4444", "#f97316", "#fbbf24", "#fff"]);
+      if (TANKS[tank.tankId]?.passive === "blackhole") {
+        const nowD = Date.now();
+        g.hazards.push({
+          id: Math.random().toString(36).slice(2),
+          x: tank.x, y: tank.y,
+          kind: "blackhole",
+          plantedAt: nowD,
+          blackholeStartedAt: nowD,
+          blackholeUntil: nowD + BLACKHOLE_DURATION_MS,
+          blackholeLastTick: nowD,
+        });
+      }
     };
 
     socket.on("game-action", onAction);
     socket.on("game-new-turn", onNewTurn);
     socket.on("game-ended", onEnded);
+    socket.on("opponent-left", onOpponentLeft);
     return () => {
       socket.off("game-action", onAction);
       socket.off("game-new-turn", onNewTurn);
       socket.off("game-ended", onEnded);
+      socket.off("opponent-left", onOpponentLeft);
     };
   }, [socket, onGameEnded]);
 
@@ -666,7 +741,14 @@ export function GameCanvas({
     });
   };
 
-  const applyHpDamage = (socketId: string, dmg: number) => {
+  const ensureStats = (socketId: string) => {
+    const g = G.current as any;
+    if (!g.stats) g.stats = {};
+    if (!g.stats[socketId]) g.stats[socketId] = { dmgDealt: 0, dmgTaken: 0, distance: 0, supplies: 0, terrainArea: 0 };
+    return g.stats[socketId];
+  };
+
+  const applyHpDamage = (socketId: string, dmg: number, sourceSocketId?: string) => {
     const g = G.current;
     if (dmg <= 0) return;
     const tank = g.tanks.find(t => t.socketId === socketId);
@@ -682,6 +764,8 @@ export function GameCanvas({
 
     const newHp = Math.max(0, tank.hp - dmg);
     tank.hp = newHp;
+    ensureStats(socketId).dmgTaken += dmg;
+    if (sourceSocketId && sourceSocketId !== socketId) ensureStats(sourceSocketId).dmgDealt += dmg;
 
     // Update UI hp map
     setUiTankHps(prev => ({ ...prev, [socketId]: newHp }));
@@ -725,7 +809,7 @@ export function GameCanvas({
     }
   };
 
-  const explodeAt = (ex: number, ey: number, wep: WeaponId, isSplit: boolean, overrideRadius?: number, overrideDmg?: number) => {
+  const explodeAt = (ex: number, ey: number, wep: WeaponId, isSplit: boolean, overrideRadius?: number, overrideDmg?: number, ownerSocketId?: string) => {
     const g = G.current;
     const def = WEAPON_DEFS[wep];
     const radius = overrideRadius ?? def.radius;
@@ -735,6 +819,7 @@ export function GameCanvas({
     const palette = def.incendiary ? ["#f97316", "#fb923c", "#fde047", "#7c2d12"] : undefined;
 
     destructTerrain(ex, ey, destructRadius);
+    if (ownerSocketId) ensureStats(ownerSocketId).terrainArea += Math.PI * destructRadius * destructRadius * TERRAIN_PX2_TO_M2;
     spawnParticles(ex, ey, particleCount, 4, palette);
     if (def.burnsHazards) burnNearbyHazards(ex, ey, radius);
     if (def.incendiary) {
@@ -747,7 +832,7 @@ export function GameCanvas({
       const dist = Math.hypot(tank.x - ex, tank.y - ey);
       if (dist < radius) {
         const dmg = Math.round(maxDmg * (1 - dist / radius));
-        applyHpDamage(tank.socketId, dmg);
+        applyHpDamage(tank.socketId, dmg, ownerSocketId);
         if (def.incendiary) igniteTank(tank.socketId, def.burnTicks);
         if (def.flowerEffect && tank.socketId === mySocketId) {
           const delta = Math.random() * 34 - 17;
@@ -761,7 +846,7 @@ export function GameCanvas({
 
   const handleExplosion = (p: Projectile) => {
     if (p.x < 0 || p.x >= WORLD_W) return;
-    explodeAt(p.x, p.y, p.type, !!p.isSplit);
+    explodeAt(p.x, p.y, p.type, !!p.isSplit, undefined, undefined, p.ownerSocketId);
   };
 
   // ── 보급 상자 획득: 무작위 탄 1회 / 쉴드 1회 / 연료 +30 중 하나 지급 ──────────
@@ -773,6 +858,7 @@ export function GameCanvas({
     if (!tank || tank.dead) return;
 
     spawnParticles(crate.x, crate.y - 6, 22, 3, ["#fbbf24", "#fde68a", "#fff"]);
+    ensureStats(socketId).supplies += 1;
     const roll = Math.random();
     if (roll < 1 / 3) {
       const allWeapons = Object.keys(WEAPON_DEFS) as WeaponId[];
@@ -827,7 +913,7 @@ export function GameCanvas({
       const dist = Math.hypot(tank.x - ex, tank.y - ey);
       if (dist < def.radius) {
         const dmg = Math.round(def.maxDmg * (1 - dist / def.radius));
-        applyHpDamage(tank.socketId, dmg);
+        applyHpDamage(tank.socketId, dmg, socketId);
         hitEnemy = true;
       }
     });
@@ -883,7 +969,7 @@ export function GameCanvas({
       const dist = Math.hypot(tank.x - cx, tank.y - cy);
       if (t > 0 && dist < 20) {
         const dmg = Math.round(def.maxDmg * (1 - dist / 20));
-        applyHpDamage(tank.socketId, dmg);
+        applyHpDamage(tank.socketId, dmg, ownerSocketId);
         igniteTank(tank.socketId, def.burnTicks);
       }
     });
@@ -975,6 +1061,7 @@ export function GameCanvas({
         }
 
         if (moved) {
+          ensureStats(mySocketId).distance += moveSpeed;
           me.fuel = Math.max(0, me.fuel - 30 * dt);
           lastFuelUpdate = now;
           setUiMyFuel(Math.round(me.fuel));
@@ -1022,6 +1109,8 @@ export function GameCanvas({
         // 지형 높이맵은 건드리지 않고 버퍼에만 구멍을 뚫음 → 지붕이 있는 진짜 터널
         const holeRadius = (cdef.caveTunnelRadius ?? 30) * 0.85;
         punchVisualHole(t.x, t.y, holeRadius);
+        ensureStats(t.socketId).terrainArea += Math.PI * holeRadius * holeRadius * TERRAIN_PX2_TO_M2 * 0.1;
+        ensureStats(t.socketId).distance += (cdef.caveMoveSpeed ?? 3);
         if (Math.random() < 0.4) spawnParticles(t.x + t.drilling!.dir * 14, t.y - 4, 2, 2, ["#a16207", "#78350f", "#d6a05a"]);
 
         if (nowCave - t.drilling!.lastTick >= 200) {
@@ -1030,7 +1119,7 @@ export function GameCanvas({
           g.tanks.forEach(other => {
             if (other.dead || other.socketId === t.socketId) return;
             if (Math.abs(other.x - drillFrontX) < 26 && Math.abs(other.y - t.y) < 30) {
-              applyHpDamage(other.socketId, Math.round((cdef.caveDmgPerTick ?? 5) * 0.2));
+              applyHpDamage(other.socketId, Math.round((cdef.caveDmgPerTick ?? 5) * 0.2), t.socketId);
             }
           });
         }
@@ -1207,7 +1296,7 @@ export function GameCanvas({
             if (tank.dead || tank.socketId === p.ownerSocketId) return;
             const lastHit = p.rollLastHit![tank.socketId] ?? 0;
             if (Math.hypot(tank.x - p.x, tank.y - p.y) < 20 && now4 - lastHit >= (def.rollHitCooldownMs ?? 500)) {
-              applyHpDamage(tank.socketId, def.maxDmg);
+              applyHpDamage(tank.socketId, def.maxDmg, p.ownerSocketId);
               p.rollLastHit![tank.socketId] = now4;
               spawnParticles(tank.x, tank.y - 8, 6, 3, ["#a1a1aa", "#facc15"]);
             }
@@ -1320,6 +1409,7 @@ export function GameCanvas({
         if (def.isDrill) {
           // 드릴: 회전하며 지형을 뚫고 지나가다가 적과 근접하면 폭발
           destructTerrain(p.x, p.y, 15);
+          ensureStats(p.ownerSocketId).terrainArea += Math.PI * 15 * 15 * TERRAIN_PX2_TO_M2 * 0.12;
           if (Math.random() < 0.5) spawnParticles(p.x, p.y, 1, 1, ["#a16207", "#78350f", "#d6a05a"]);
           let hitAnyone = false;
           for (const tank of g.tanks) {

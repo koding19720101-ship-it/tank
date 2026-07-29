@@ -7,7 +7,8 @@ import { io, Socket } from "socket.io-client";
 import { LogOut, Play, Sparkles, Users, Palette, Check, X, Pencil, ShieldAlert, Swords } from "lucide-react";
 import { AvatarEditor } from "@/components/AvatarEditor";
 import { GarageModal } from "@/components/GarageModal";
-import { GameCanvas } from "@/components/GameCanvas";
+import { GameCanvas, MvpEntry } from "@/components/GameCanvas";
+import { MvpRevealModal } from "@/components/MvpRevealModal";
 import { PatchNotesBar } from "@/components/PatchNotesBar";
 import { TankId, DEFAULT_TANK_ID, TANKS, TANK_ORDER } from "@/lib/tanks";
 
@@ -52,6 +53,7 @@ export default function LobbyPage() {
   const [customAvatar, setCustomAvatar] = useState<string>("");
   const [isEditingAvatar, setIsEditingAvatar] = useState(false);
   const [isGarageOpen, setIsGarageOpen] = useState(false);
+  const [mvpReveal, setMvpReveal] = useState<{ entries: MvpEntry[]; resultTitle: string; resultSubtitle: string } | null>(null);
   const [selectedTankId, setSelectedTankId] = useState<TankId>(DEFAULT_TANK_ID);
 
   // Gameplay session states
@@ -240,7 +242,7 @@ export default function LobbyPage() {
     setIsEditingNickname(false);
   };
 
-  const handleGameFinished = useCallback((reason: string) => {
+  const handleGameFinished = useCallback((reason: string, mvp?: MvpEntry[]) => {
     setIsPlaying(false);
     setGameStartInfo(null);
     setMatchState("IDLE");
@@ -263,18 +265,20 @@ export default function LobbyPage() {
       });
     };
 
+    let title = "게임이 종료되었습니다!";
+    let subtitle = "";
     if (reason === "defeat") {
       if (userId) { const nl = losses + 1; setLosses(nl); localStorage.setItem(`user_losses_${userId}`, nl.toString()); }
       recordTankResult("loss");
-      alert("패배했습니다! 다음엔 꼭 이겨보세요. 💪");
+      title = "패배했습니다 💪";
+      subtitle = "다음엔 꼭 이겨보세요.";
     } else if (reason === "victory" || reason === "opponent_left") {
       if (userId) { const nw = wins + 1; setWins(nw); localStorage.setItem(`user_wins_${userId}`, nw.toString()); }
       recordTankResult("win");
-      if (reason === "opponent_left") alert("상대방이 게임에서 탈주하여 승리했습니다! 🏆");
-      else alert("승리했습니다! 🏆 훌륭한 포격이었어요!");
-    } else {
-      alert("게임이 종료되었습니다!");
+      title = "승리했습니다 🏆";
+      subtitle = reason === "opponent_left" ? "상대방이 게임에서 탈주했습니다." : "훌륭한 포격이었어요!";
     }
+    setMvpReveal({ entries: mvp ?? [], resultTitle: title, resultSubtitle: subtitle });
   }, [session, losses, wins]);
 
   // Stable profile object for GameCanvas — prevents its heavy render-loop
@@ -479,6 +483,15 @@ export default function LobbyPage() {
 
       {isGarageOpen && (
         <GarageModal currentTankId={selectedTankId} onSelectTank={selectTank} tankStats={tankStats} onClose={() => setIsGarageOpen(false)} />
+      )}
+
+      {mvpReveal && (
+        <MvpRevealModal
+          entries={mvpReveal.entries}
+          resultTitle={mvpReveal.resultTitle}
+          resultSubtitle={mvpReveal.resultSubtitle}
+          onClose={() => setMvpReveal(null)}
+        />
       )}
 
       {/* 모드 선택 모달 */}

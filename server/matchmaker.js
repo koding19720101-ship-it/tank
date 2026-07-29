@@ -117,8 +117,13 @@ io.on("connection", (socket) => {
     }
 
     for (const [roomName, room] of gameRooms.entries()) {
-      if (room.sockets.includes(socket.id)) {
-        checkAndHandleDeath(roomName, room, socket.id);
+      if (room.sockets.includes(socket.id) && !room.deadSet.has(socket.id)) {
+        // 남은 플레이어들에게 먼저 "상대가 나갔다"는 걸 알려서, 클라이언트가 사망
+        // 애니메이션(코스모라면 블랙홀 패시브까지)을 재생할 시간을 준 뒤 실제로 게임을 종료함
+        socket.to(roomName).emit("opponent-left", { deadSocketId: socket.id });
+        setTimeout(() => {
+          checkAndHandleDeath(roomName, room, socket.id, "disconnect");
+        }, 4500);
       }
     }
 
@@ -137,7 +142,7 @@ function spreadXs(size, team) {
 
 // Mark a player dead (idempotent) and, if that eliminates a whole team,
 // broadcast game-ended to everyone in the room and tear it down.
-function checkAndHandleDeath(roomName, room, deadSocketId) {
+function checkAndHandleDeath(roomName, room, deadSocketId, cause = "death") {
   if (room.deadSet.has(deadSocketId)) return;
   room.deadSet.add(deadSocketId);
 
@@ -150,7 +155,9 @@ function checkAndHandleDeath(roomName, room, deadSocketId) {
   if (redAlive === 0 || blueAlive === 0) {
     const losingTeam = redAlive === 0 ? "red" : "blue";
     room.sockets.forEach((sid) => {
-      const outcome = room.teamOf[sid] === losingTeam ? "defeat" : "victory";
+      const outcome = room.teamOf[sid] === losingTeam
+        ? "defeat"
+        : (cause === "disconnect" ? "opponent_left" : "victory");
       io.to(sid).emit("game-ended", { reason: outcome });
     });
     gameRooms.delete(roomName);
