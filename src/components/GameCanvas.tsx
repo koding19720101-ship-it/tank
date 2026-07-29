@@ -273,6 +273,7 @@ export function GameCanvas({
     buf.width = WORLD_W; buf.height = CANVAS_H;
     const bctx = buf.getContext("2d");
     if (bctx) {
+      bctx.imageSmoothingEnabled = false;
       bctx.beginPath(); bctx.moveTo(0, CANVAS_H);
       for (let x = 0; x < WORLD_W; x++) bctx.lineTo(x, terrain[x]);
       bctx.lineTo(WORLD_W, CANVAS_H); bctx.closePath();
@@ -421,7 +422,7 @@ export function GameCanvas({
       let topY = CANVAS_H;
       for (let y = 0; y < scanH; y++) {
         const alpha = data[(y * w + i) * 4 + 3];
-        if (alpha > 30) { topY = scanTop + y; break; }
+        if (alpha > 160) { topY = scanTop + y; break; }
       }
       g.terrain[startX + i] = topY;
     }
@@ -1371,11 +1372,14 @@ export function GameCanvas({
             const elapsed = nowB - h.plantedAt;
             const growProgress = Math.min(1, elapsed / Math.max(1, total * 0.4));
             h.beamWidth = (satDef.beamMaxWidth ?? 70) * growProgress;
-            if (Math.random() < 0.6) destructTerrain(h.x, h.y, (h.beamWidth ?? 10) * 0.5);
+            // 매 프레임 무거운 높이맵 재스캔을 하지 않도록 시각 전용 펀치만 사용 (랙/시차 원인 제거)
+            if (Math.random() < 0.6) punchVisualHole(h.x, h.y, (h.beamWidth ?? 10) * 0.5);
             if (nowB - (h.beamLastTick ?? 0) >= BEAM_TICK_MS) {
               h.beamLastTick = nowB;
+              // 틱마다 한 번만 실제 높이맵을 갱신 (성능 확보 + 지형-라인 불일치 방지)
+              destructTerrain(h.x, h.y, (h.beamWidth ?? 10) * 0.5);
               g.tanks.forEach(tank => {
-                if (tank.dead || tank.socketId === h.ownerSocketId) return;
+                if (tank.dead) return;
                 if (Math.abs(tank.x - h.x) < (h.beamWidth ?? 10) / 2 + 12) {
                   applyHpDamage(tank.socketId, Math.round((satDef.beamDmgPerSec ?? 10) * (BEAM_TICK_MS / 1000)));
                   spawnParticles(tank.x, tank.y - 10, 4, 2, ["#a78bfa", "#ddd6fe"]);
@@ -1477,7 +1481,9 @@ export function GameCanvas({
       if (g.terrainCanvas) {
         const sx = Math.max(0, Math.floor(camOffset));
         const sw = Math.min(WORLD_W - sx, Math.ceil(VIEW_W) + 2);
+        ctx.imageSmoothingEnabled = false;
         ctx.drawImage(g.terrainCanvas, sx, 0, sw, CANVAS_H, sx, 0, sw, CANVAS_H);
+        ctx.imageSmoothingEnabled = true;
       }
 
       // Terrain ridge

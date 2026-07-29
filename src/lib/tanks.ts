@@ -89,7 +89,7 @@ export const WEAPON_DEFS: Record<WeaponId, WeaponDef> = {
   supernova: { label: "초신성 🌟", color: "#fef9c3", radius: 46, maxDmg: 11, isSupernova: true, chainCount: 7, chainDelayFrames: 10, chainRadius: 48, chainDmg: 9 },
   drill: { label: "드릴 🔩", color: "#a16207", radius: 22, maxDmg: 14, splitCount: 3, splitDamage: 14, splitDelay: 2, splitAngleDeg: 22, isDrill: true },
   cavern: { label: "동굴 🕳️", color: "#78350f", radius: 0, maxDmg: 0, isCavern: true, caveDurationMs: 1800, caveDmgPerTick: 5, caveMoveSpeed: 3.2, caveTunnelRadius: 30, caveMaxDepth: 95 },
-  sawblade: { label: "회전톱 ⚙️", color: "#71717a", radius: 16, maxDmg: 7, isSawblade: true, rollDurationMs: 3000, rollSpeed: 3.5, rollHitCooldownMs: 500 },
+  sawblade: { label: "회전톱 ⚙️", color: "#71717a", radius: 16, maxDmg: 15, isSawblade: true, rollDurationMs: 3000, rollSpeed: 3.5, rollHitCooldownMs: 500 },
 };
 
 export type TankId = "chrome" | "shotgun" | "forest" | "bolt" | "oat" | "inferno" | "cosmo" | "mole";
