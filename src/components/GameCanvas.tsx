@@ -314,11 +314,24 @@ export function GameCanvas({
     }
     g.terrainCanvas = buf;
 
-    // 구멍(크레이터) 안쪽에 어두운 음영을 깔아줄 별도 버퍼 — 지형 버퍼보다 아래에 그려져
-    // 뚫린 자리가 뒤쪽으로 움푹 패인 것처럼 보이게 함
-    const holesBuf = document.createElement("canvas");
-    holesBuf.width = WORLD_W; holesBuf.height = CANVAS_H;
-    g.holesCanvas = holesBuf;
+    // 지형과 완전히 같은 모양이지만 더 진한 색으로 채운 배경 버퍼 — 항상 지형 버퍼 뒤에
+    // 깔려있어서, 폭발로 구멍이 뚫리면 그 자리에 "패인 안쪽"처럼 진한 지형 실루엣이 비쳐 보임
+    const backBuf = document.createElement("canvas");
+    backBuf.width = WORLD_W; backBuf.height = CANVAS_H;
+    const hctx = backBuf.getContext("2d");
+    if (hctx) {
+      hctx.imageSmoothingEnabled = false;
+      hctx.beginPath(); hctx.moveTo(0, CANVAS_H);
+      for (let x = 0; x < WORLD_W; x++) hctx.lineTo(x, terrain[x]);
+      hctx.lineTo(WORLD_W, CANVAS_H); hctx.closePath();
+      const backGrad = hctx.createLinearGradient(0, 150, 0, CANVAS_H);
+      backGrad.addColorStop(0, "#7a5a34");
+      backGrad.addColorStop(0.35, "#5c421f");
+      backGrad.addColorStop(1, "#332212");
+      hctx.fillStyle = backGrad;
+      hctx.fill();
+    }
+    g.holesCanvas = backBuf;
 
     // 보급 상자: 30~60초 사이 무작위 시점에 첫 상자 예약 (시드 기반이라 양쪽 클라이언트가 동일)
     g.nextCrateAt = Date.now() + (30 + seededRand(initialSeed, g.crateSeedStep) * 30) * 1000;
@@ -427,24 +440,6 @@ export function GameCanvas({
   }, [socket, onGameEnded]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
-  // 구멍 안쪽에 어두운 그림자를 누적으로 칠해 "패인 구멍"처럼 보이게 함
-  const paintHoleShadow = (cx: number, cy: number, radius: number) => {
-    const buf = G.current.holesCanvas;
-    if (!buf) return;
-    const hctx = buf.getContext("2d");
-    if (!hctx) return;
-    hctx.save();
-    const grad = hctx.createRadialGradient(cx, cy, radius * 0.15, cx, cy, radius * 1.05);
-    grad.addColorStop(0, "rgba(20,12,6,0.95)");
-    grad.addColorStop(0.55, "rgba(35,22,10,0.85)");
-    grad.addColorStop(1, "rgba(35,22,10,0)");
-    hctx.fillStyle = grad;
-    hctx.beginPath();
-    hctx.arc(cx, cy, radius * 1.05, 0, Math.PI * 2);
-    hctx.fill();
-    hctx.restore();
-  };
-
   // 지형에 실제 원형 구멍을 뚫는다 (오프스크린 버퍼에 destination-out으로 펀치한 뒤,
   // 그 결과를 다시 스캔해서 높이맵을 갱신 — 삼각형/손가락 모양 대신 항상 진짜 원형 크레이터가 남음)
   const destructTerrain = (cx: number, cy: number, radius: number) => {
@@ -454,7 +449,6 @@ export function GameCanvas({
     const bctx = buf.getContext("2d");
     if (!bctx) return;
 
-    paintHoleShadow(cx, cy, radius);
     bctx.save();
     bctx.globalCompositeOperation = "destination-out";
     bctx.beginPath();
@@ -490,7 +484,6 @@ export function GameCanvas({
     if (!buf) return;
     const bctx = buf.getContext("2d");
     if (!bctx) return;
-    paintHoleShadow(cx, cy, radius);
     bctx.save();
     bctx.globalCompositeOperation = "destination-out";
     bctx.beginPath();
@@ -533,23 +526,8 @@ export function GameCanvas({
         bctx.restore();
       }
     }
-    // 흙이 다시 채워진 자리는 더 이상 구멍이 아니므로 어두운 그림자도 함께 지움
-    const holesBuf = g.holesCanvas;
-    if (holesBuf) {
-      const hctx = holesBuf.getContext("2d");
-      if (hctx) {
-        hctx.save();
-        hctx.globalCompositeOperation = "destination-out";
-        hctx.beginPath();
-        hctx.moveTo(start, CANVAS_H);
-        for (let x = start; x <= end; x++) hctx.lineTo(x, t[x]);
-        hctx.lineTo(end, CANVAS_H);
-        hctx.closePath();
-        hctx.fill();
-        hctx.restore();
-      }
-    }
   };
+
 
   const spawnParticles = (ex: number, ey: number, count = 25, size = 4, palette?: string[]) => {
     const colors = palette ?? ["#ff5722", "#ff9800", "#ffeb3b", "#c2965b", "#fff"];
