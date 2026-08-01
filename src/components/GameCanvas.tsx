@@ -515,41 +515,35 @@ export function GameCanvas({
   }, [socket, onGameEnded]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
-  // 지형에 실제 원형 구멍을 뚫는다 (오프스크린 버퍼에 destination-out으로 펀치한 뒤,
-  // 그 결과를 다시 스캔해서 높이맵을 갱신 — 삼각형/손가락 모양 대신 항상 진짜 원형 크레이터가 남음)
+  // 지형에 실제 원형 구멍을 뚫는다. 시각 버퍼(destination-out)와 높이맵(선)을
+  // 같은 원 공식으로 '한 번에 동시에' 갱신해서 배경과 선이 절대 어긋나지 않게 함
+  // (예전엔 버퍼를 다시 스캔해서 높이맵을 갱신했는데, 그 스캔이 무겁기도 하고
+  // 위성폭격처럼 매 프레임 부르는 경우 스캔을 매번 못 해서 배경-선 시차가 생겼음)
   const destructTerrain = (cx: number, cy: number, radius: number) => {
     const g = G.current;
     const buf = g.terrainCanvas;
-    if (!buf) return;
-    const bctx = buf.getContext("2d");
-    if (!bctx) return;
-
-    bctx.save();
-    bctx.globalCompositeOperation = "destination-out";
-    bctx.beginPath();
-    bctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    bctx.fill();
-    bctx.restore();
-
-    const startX = Math.max(0, Math.floor(cx - radius - 2));
-    const endX = Math.min(WORLD_W - 1, Math.ceil(cx + radius + 2));
-    const w = endX - startX + 1;
-    if (w <= 0) return;
-    const scanTop = 130;
-    const scanH = CANVAS_H - scanTop;
-    let data: Uint8ClampedArray;
-    try {
-      data = bctx.getImageData(startX, scanTop, w, scanH).data;
-    } catch {
-      return;
-    }
-    for (let i = 0; i < w; i++) {
-      let topY = CANVAS_H;
-      for (let y = 0; y < scanH; y++) {
-        const alpha = data[(y * w + i) * 4 + 3];
-        if (alpha > 160) { topY = scanTop + y; break; }
+    if (buf) {
+      const bctx = buf.getContext("2d");
+      if (bctx) {
+        bctx.save();
+        bctx.globalCompositeOperation = "destination-out";
+        bctx.beginPath();
+        bctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        bctx.fill();
+        bctx.restore();
       }
-      g.terrain[startX + i] = topY;
+    }
+
+    const t = g.terrain;
+    const start = Math.max(0, Math.floor(cx - radius));
+    const end = Math.min(WORLD_W - 1, Math.ceil(cx + radius));
+    for (let x = start; x <= end; x++) {
+      const dx = x - cx;
+      if (Math.abs(dx) < radius) {
+        const dy = Math.sqrt(radius * radius - dx * dx);
+        const targetY = cy + dy;
+        if (t[x] < targetY) t[x] = Math.min(CANVAS_H, targetY);
+      }
     }
   };
 
